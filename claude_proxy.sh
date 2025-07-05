@@ -33,13 +33,43 @@
 #
 
 
-## 重点: 需要替换的内容
-# key
-readonly API_KEY=""
-# 站点 ex: tbai.xin/v1
-readonly OPEN_AI_URL=""
-# 模型
-readonly OPEN_MODEL="gemini-2.5-pro"
+## 交互式配置
+
+# 默认值
+DEFAULT_WORKER_URL="https://claude-code-proxy.suixifa.workers.dev"
+DEFAULT_API_KEY="sk-"
+DEFAULT_OPEN_AI_URL="tbai.xin/v1"
+DEFAULT_OPEN_MODEL="gemini-2.5-pro"
+
+# 提示用户输入配置
+echo "=== Claude Code 代理配置 ==="
+echo
+
+read -p "请输入 Worker URL [默认: $DEFAULT_WORKER_URL]: " input_worker_url
+WORKER_URL="${input_worker_url:-$DEFAULT_WORKER_URL}"
+
+read -p "请输入 API Key [默认: $DEFAULT_API_KEY]: " input_api_key
+API_KEY="${input_api_key:-$DEFAULT_API_KEY}"
+
+read -p "请输入 OpenAI URL (不带http协议) [默认: $DEFAULT_OPEN_AI_URL]: " input_open_ai_url
+OPEN_AI_URL="${input_open_ai_url:-$DEFAULT_OPEN_AI_URL}"
+
+read -p "请输入模型名称 [默认: $DEFAULT_OPEN_MODEL]: " input_open_model
+OPEN_MODEL="${input_open_model:-$DEFAULT_OPEN_MODEL}"
+
+echo
+echo "配置确认:"
+echo "Worker URL: $WORKER_URL"
+echo "API Key: ${API_KEY:0:10}..." 
+echo "OpenAI URL: $OPEN_AI_URL"
+echo "模型: $OPEN_MODEL"
+echo
+
+read -p "确认配置? (y/N): " confirm
+if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "配置已取消"
+    exit 0
+fi
 
 # --- 常量 ---
 # 定义脚本所需的常量
@@ -50,7 +80,7 @@ readonly SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 
 
 
-readonly BASE_URL="https://claude-code-proxy.suixifa.workers.dev/$OPEN_AI_URL/$OPEN_MODEL"
+readonly BASE_URL="$WORKER_URL/$OPEN_AI_URL/$OPEN_MODEL"
 readonly API_KEY_HELPER="echo '$API_KEY'"
 
 # --- 主脚本 ---
@@ -192,3 +222,50 @@ fi
 # 提示配置完成
 echo "Configuration complete!"
 echo "Settings saved to: $SETTINGS_FILE"
+
+# 测试代理连接
+echo
+echo "=== 测试代理连接 ==="
+echo "正在测试代理连接..."
+
+# 构建测试请求
+TEST_URL="$BASE_URL/v1/messages"
+TEST_HEADERS="Content-Type: application/json"
+TEST_DATA='{
+  "model": "'"$OPEN_MODEL"'",
+  "max_tokens": 10,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ]
+}'
+
+# 使用curl测试连接
+echo "测试URL: $TEST_URL"
+echo "使用curl测试代理连接..."
+echo
+
+curl_response=$(curl -s -w "\n%{http_code}" \
+  -X POST \
+  -H "$TEST_HEADERS" \
+  -H "x-api-key: $API_KEY" \
+  -d "$TEST_DATA" \
+  "$TEST_URL")
+
+# 提取HTTP状态码
+http_code=$(echo "$curl_response" | tail -n1)
+response_body=$(echo "$curl_response" | sed '$d')
+
+if [ "$http_code" = "200" ]; then
+    echo "✅ 代理连接成功！"
+    echo "响应: $response_body"
+else
+    echo "❌ 代理连接失败"
+    echo "HTTP状态码: $http_code"
+    echo "响应: $response_body"
+fi
+
+echo
+echo "现在可以使用 'claude' 命令通过代理访问模型了！"
