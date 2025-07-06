@@ -129,13 +129,6 @@ npx wrangler dev
 
 **`.dev.vars` 文件示例**:
 ```
-```
-
-[![Powered by DartNode](https://dartnode.com/branding/DN-Open-Source-sm.png)](https://dartnode.com "Powered by DartNode - Free VPS for Open Source")
-
-
-
-
 HAIKU_MODEL_NAME="gpt-4o-mini"
 HAIKU_BASE_URL="https://api.your-provider.com/v1"
 HAIKU_API_KEY="sk-your-secret-key"
