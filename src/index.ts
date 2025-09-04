@@ -1,3 +1,4 @@
+
 /**
  * Claude-to-OpenAI API Proxy for Cloudflare Workers
  *
@@ -30,7 +31,10 @@ export interface Env {
     HAIKU_MODEL_NAME: string;
     HAIKU_BASE_URL: string;
     HAIKU_API_KEY: string;
+    OPENAI_BASE_URL: string;
 }
+
+type ExecutionContext = any;
 
 // --- Claude API Types ---
 
@@ -104,6 +108,7 @@ interface OpenAIRequest {
     stream?: boolean;
     tools?: Array<{ type: "function"; function: any }>;
     tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
+    stream_options?: { include_usage: boolean };
 }
 
 // --- Main Worker Logic ---
@@ -142,31 +147,34 @@ export default {
             let targetBaseUrl: string;
 
             // Check for the "haiku" specific route first.
-            const isHaiku = claudeRequest.model.toLowerCase().includes("haiku");
-            if (isHaiku) {
-                targetModelName = env.HAIKU_MODEL_NAME;
-                targetBaseUrl = env.HAIKU_BASE_URL;
-                targetApiKey = env.HAIKU_API_KEY; // Use the specific key for Haiku
-            } else {
-                // Try to parse the base URL and model from the dynamic path.
-                const dynamicConfig = parsePathAndModel(url.pathname);
-                if (dynamicConfig) {
-                    targetBaseUrl = dynamicConfig.baseUrl;
-                    targetModelName = dynamicConfig.modelName;
-                } else {
-                    return new Response(JSON.stringify({ error: 'The "url" is missing.' }), {
-                        status: 401,
-                        headers: { 'Content-Type': 'application/json' },
-                    });
-                }
-            }
+            // const isHaiku = claudeRequest.model.toLowerCase().includes("haiku");
+            // if (isHaiku) {
+            //     targetModelName = env.HAIKU_MODEL_NAME;
+            //     targetBaseUrl = env.HAIKU_BASE_URL;
+            //     targetApiKey = env.HAIKU_API_KEY; // Use the specific key for Haiku
+            // } else {
+            //     // Try to parse the base URL and model from the dynamic path.
+            //     const dynamicConfig = parsePathAndModel(url.pathname);
+            //     if (dynamicConfig) {
+            //         targetBaseUrl = dynamicConfig.baseUrl;
+            //         targetModelName = dynamicConfig.modelName;
+            //     } else {
+            //         return new Response(JSON.stringify({ error: 'The "url" is missing.' }), {
+            //             status: 401,
+            //             headers: { 'Content-Type': 'application/json' },
+            //         });
+            //     }
+            // }
+            // 设成本地chat的完整base_url，如http://localhost:8094/v1
+            targetBaseUrl = env.OPENAI_BASE_URL;
+            targetModelName = claudeRequest.model;
 
-            if (!targetBaseUrl || !targetModelName) {
-                return new Response(JSON.stringify({ error: 'Could not determine target base URL or model name. Ensure the URL format is correct or fallback environment variables are set.' }), {
-                    status: 400,
-                    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-                });
-            }
+            // if (!targetBaseUrl || !targetModelName) {
+            //     return new Response(JSON.stringify({ error: 'Could not determine target base URL or model name. Ensure the URL format is correct or fallback environment variables are set.' }), {
+            //         status: 400,
+            //         headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+            //     });
+            // }
 
             const target = {
                 modelName: targetModelName,
@@ -380,6 +388,11 @@ function convertClaudeToOpenAIRequest(
         }
     }
 
+    // Ensure usage is included in streaming responses when supported by the upstream API
+    if (claudeRequest.stream) {
+        openaiRequest.stream_options = { include_usage: true };
+    }
+
     return openaiRequest;
 }
 
@@ -428,6 +441,8 @@ function streamTransformer(model: string) {
     let contentBlockIndex = 0;
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
+    let inputTokens = 0;
+    let outputTokens = 0;
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     };
@@ -440,6 +455,7 @@ function streamTransformer(model: string) {
         buffer += decoder.decode(chunk, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
+        // removed per-chunk reinitialization of inputTokens/outputTokens to preserve totals across chunks
         for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
             const data = line.substring(6);
@@ -455,7 +471,9 @@ function streamTransformer(model: string) {
                     if (finishReason === 'tool_calls') finalStopReason = 'tool_use';
                     if (finishReason === 'length') finalStopReason = 'max_tokens';
                 } catch {}
-                sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: { output_tokens: 0 } });
+                // Log final usage at stream end
+                // console.log('[stream end] usage', { inputTokens, outputTokens });
+                sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: { input_tokens: inputTokens, output_tokens: outputTokens } });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
                 controller.terminate();
                 return;
@@ -463,6 +481,18 @@ function streamTransformer(model: string) {
             try {
                 const openaiChunk = JSON.parse(data);
                 const delta = openaiChunk.choices[0]?.delta;
+                
+                if (openaiChunk.usage) {
+                    const { prompt_tokens, completion_tokens } = openaiChunk.usage;
+                    if (typeof prompt_tokens === 'number') {
+                        inputTokens = Math.max(inputTokens, prompt_tokens);
+                    }
+                    if (typeof completion_tokens === 'number') {
+                        outputTokens = Math.max(outputTokens, completion_tokens);
+                    }
+                    // Log each time usage appears in the stream
+                    // console.log('[stream usage]', { prompt_tokens, completion_tokens, inputTokens, outputTokens });
+                }
                 if (!delta) continue;
                 if (delta.content) {
                     sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta.content } });
