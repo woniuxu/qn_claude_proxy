@@ -1,0 +1,30 @@
+services:
+  claude-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # platforms:
+        # - linux/amd64
+        # - linux/arm64
+        # - macos/arm64
+    container_name: claude-proxy
+    ports:
+      - "8092:8092"
+    environment:
+      - NODE_ENV=production
+      - PORT=8092
+      - OPENAI_BASE_URL=https://api-deepseek.qiniu.io/v1    
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8092/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    # network_mode: "host"
+    networks:
+      - claude-proxy-network
+
+networks:
+  claude-proxy-network:
+    driver: bridge

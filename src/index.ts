@@ -1,40 +1,38 @@
-
 /**
- * Claude-to-OpenAI API Proxy for Cloudflare Workers
+ * Claude-to-OpenAI API Proxy for Node.js
  *
- * This worker acts as a proxy, converting API requests from the Claude format to the OpenAI format,
+ * This Express server acts as a proxy, converting API requests from the Claude format to the OpenAI format,
  * and then converting the responses back. It enables using OpenAI-compatible APIs (like OpenAI,
  * Azure OpenAI, Google Gemini, Ollama, etc.) with clients designed for the Claude API.
  *
  * Features:
  * - Full support for the /v1/messages endpoint.
- * - Dynamic Routing: Routes requests to any OpenAI-compatible API by embedding the target URL and
- * model in the request path. For example, a request to the path
- * `/https/api.groq.com/openai/v1/llama3-70b-8192/v1/messages` will be forwarded to the Groq API.
  * - Correctly handles and translates tool calls (function calling), including cleaning schemas
  * for compatibility with strict APIs like Google Gemini.
  * - Supports streaming responses (Server-Sent Events).
- * - Dynamically selects API endpoints and keys based on the requested model name (e.g., "haiku")
- * or the dynamic URL path.
- * - Designed for easy deployment on Cloudflare Workers.
+ * - Designed for easy deployment on any Node.js hosting platform.
  */
+
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+
+// 加载环境变量
+dotenv.config();
 
 // --- TYPE DEFINITIONS ---
 
 /**
- * Environment variables configured in your wrangler.toml or Cloudflare dashboard.
+ * Environment variables configured in your .env file.
  */
 export interface Env {
     /**
      * Pre-configured route for a "haiku" model for easier access.
-     */
-    HAIKU_MODEL_NAME: string;
-    HAIKU_BASE_URL: string;
-    HAIKU_API_KEY: string;
+     */    
     OPENAI_BASE_URL: string;
+    OPENAI_API_KEY?: string;
+    PORT: string;
 }
-
-type ExecutionContext = any;
 
 // --- Claude API Types ---
 
@@ -111,155 +109,120 @@ interface OpenAIRequest {
     stream_options?: { include_usage: boolean };
 }
 
-// --- Main Worker Logic ---
+// --- Express App Setup ---
 
-export default {
-    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-        if (request.method === "OPTIONS") {
-            return handleOptions();
-        }
+const app = express();
+const PORT = process.env.PORT || 8092;
 
-        const url = new URL(request.url);
-        // All valid requests must end with `/v1/messages`.
-        if (!url.pathname.endsWith("/v1/messages")) {
-            return new Response("Not Found. URL must end with /v1/messages", { status: 404 });
-        }
+// 中间件
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-        if (request.method !== "POST") {
-            return new Response("Method Not Allowed", { status: 405 });
-        }
-
-        const apiKey = request.headers.get('x-api-key');
-        if (!apiKey) {
-            return new Response(JSON.stringify({ error: 'The "x-api-key" header is missing.' }), {
-                status: 401,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        }
-
-        try {
-            const claudeRequest: ClaudeMessagesRequest = await request.json();
-
-            // --- Configuration Selection ---
-            // The API key from the header is used by default for all dynamic requests.
-            let targetApiKey = apiKey;
-            let targetModelName: string;
-            let targetBaseUrl: string;
-
-            // Check for the "haiku" specific route first.
-            // const isHaiku = claudeRequest.model.toLowerCase().includes("haiku");
-            // if (isHaiku) {
-            //     targetModelName = env.HAIKU_MODEL_NAME;
-            //     targetBaseUrl = env.HAIKU_BASE_URL;
-            //     targetApiKey = env.HAIKU_API_KEY; // Use the specific key for Haiku
-            // } else {
-            //     // Try to parse the base URL and model from the dynamic path.
-            //     const dynamicConfig = parsePathAndModel(url.pathname);
-            //     if (dynamicConfig) {
-            //         targetBaseUrl = dynamicConfig.baseUrl;
-            //         targetModelName = dynamicConfig.modelName;
-            //     } else {
-            //         return new Response(JSON.stringify({ error: 'The "url" is missing.' }), {
-            //             status: 401,
-            //             headers: { 'Content-Type': 'application/json' },
-            //         });
-            //     }
-            // }
-            // 设成本地chat的完整base_url，如http://localhost:8094/v1
-            targetBaseUrl = env.OPENAI_BASE_URL;
-            targetModelName = claudeRequest.model;
-
-            // if (!targetBaseUrl || !targetModelName) {
-            //     return new Response(JSON.stringify({ error: 'Could not determine target base URL or model name. Ensure the URL format is correct or fallback environment variables are set.' }), {
-            //         status: 400,
-            //         headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-            //     });
-            // }
-
-            const target = {
-                modelName: targetModelName,
-                baseUrl: targetBaseUrl,
-                apiKey: targetApiKey,
-            };
-
-            const openaiRequest = convertClaudeToOpenAIRequest(claudeRequest, target.modelName);
-
-            const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${target.apiKey}`,
-                },
-                body: JSON.stringify(openaiRequest),
-            });
-
-            if (!openaiApiResponse.ok) {
-                const errorBody = await openaiApiResponse.text();
-                return new Response(errorBody, {
-                    status: openaiApiResponse.status,
-                    statusText: openaiApiResponse.statusText,
-                    headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-                });
-            }
-
-            if (claudeRequest.stream) {
-                const transformStream = new TransformStream({
-                    transform: streamTransformer(claudeRequest.model),
-                });
-                return new Response(openaiApiResponse.body!.pipeThrough(transformStream), {
-                    headers: { "Content-Type": "text/event-stream", ...corsHeaders() },
-                });
-            } else {
-                const openaiResponse = await openaiApiResponse.json();
-                const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, claudeRequest.model);
-                return new Response(JSON.stringify(claudeResponse), {
-                    headers: { "Content-Type": "application/json", ...corsHeaders() },
-                });
-            }
-        } catch (e: any) {
-            return new Response(JSON.stringify({ error: e.message }), {
-                status: 500,
-                headers: { "Content-Type": "application/json", ...corsHeaders() },
-            });
-        }
-    },
+// 获取环境变量
+const env: Env = {    
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'http://localhost:8094/v1',    
+    PORT: process.env.PORT || '8092',    
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY
 };
 
+// --- Main Route Handler ---
+
+app.all('/v1/messages', async (req, res) => {
+    if (req.method === "OPTIONS") {
+        return handleOptions(res);
+    }
+
+    if (req.method !== "POST") {
+        return res.status(405).json({ error: "Method Not Allowed" });
+    }
+
+    const apiKey = req.headers['x-api-key'] as string;
+    if (!apiKey) {
+        return res.status(401).json({ error: 'The "x-api-key" header is missing.' });
+    }
+
+    try {
+        const claudeRequest: ClaudeMessagesRequest = req.body;
+
+        // --- Configuration Selection ---
+        let targetApiKey = apiKey;
+        let targetModelName: string;
+        let targetBaseUrl: string;
+
+        // 设成本地chat的完整base_url，如http://localhost:8094/v1
+        targetBaseUrl = env.OPENAI_BASE_URL;
+        targetModelName = claudeRequest.model;
+
+        const target = {
+            modelName: targetModelName,
+            baseUrl: targetBaseUrl,
+            apiKey: targetApiKey,
+        };
+
+        const openaiRequest = convertClaudeToOpenAIRequest(claudeRequest, target.modelName);
+        console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
+        console.log(`target.baseUrl: ${target.baseUrl}`);
+        console.log(`target.apiKey: ${target.apiKey}`);
+        const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${target.apiKey}`,
+            },
+            body: JSON.stringify(openaiRequest),
+        });
+
+        if (!openaiApiResponse.ok) {
+            const errorBody = await openaiApiResponse.text();
+            return res.status(openaiApiResponse.status).json(JSON.parse(errorBody));
+        }
+
+        if (claudeRequest.stream) {
+            const transformStream = new TransformStream({
+                transform: streamTransformer(claudeRequest.model),
+            });
+            
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            
+            // 将 OpenAI 响应流通过转换流传递给客户端
+            if (openaiApiResponse.body) {
+                openaiApiResponse.body.pipeThrough(transformStream).pipeTo(
+                    new WritableStream({
+                        write(chunk) {
+                            res.write(chunk);
+                        },
+                        close() {
+                            res.end();
+                        }
+                    })
+                );
+            }
+        } else {
+            const openaiResponse = await openaiApiResponse.json();
+            const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, claudeRequest.model);
+            return res.json(claudeResponse);
+        }
+    } catch (e: any) {
+        console.error('Error processing request:', e);
+        return res.status(500).json({ error: e.message });
+    }
+});
+
+// 健康检查端点
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// 启动服务器
+app.listen(PORT, () => {
+    console.log(`Claude Proxy server is running on port ${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/health`);
+    console.log(`API endpoint: http://localhost:${PORT}/v1/messages`);
+});
+
 // ======================= Helper Functions =======================
-
-/**
- * Parses the model and base URL from the request pathname.
- * The path is expected to be in the format: /<scheme>/<host>/.../<model_name>/v1/messages
- * or /<host>/.../<model_name>/v1/messages (defaulting to https).
- * @param pathname The URL pathname from the request.
- * @returns An object with `baseUrl` and `modelName`, or `null` if the path doesn't contain a dynamic configuration.
- */
-function parsePathAndModel(pathname: string): { baseUrl: string; modelName: string } | null {
-    // Remove the mandatory suffix to isolate the dynamic parts of the path.
-    const dynamicPath = pathname.substring(0, pathname.lastIndexOf('/v1/messages'));
-    const parts = dynamicPath.split('/').filter(p => p);
-
-    if (parts.length < 2) {
-        // Not enough parts for a dynamic configuration.
-        // This occurs for requests to the root `/v1/messages`.
-        return null;
-    }
-
-    // The last part of the dynamic path is the model name.
-    const modelName = parts.pop()!;
-    let baseUrl: string;
-
-    // Reconstruct the base URL from the remaining parts.
-    if (parts[0].toLowerCase() === 'http' || parts[0].toLowerCase() === 'https') {
-        const scheme = parts.shift()!;
-        baseUrl = `${scheme}://${parts.join('/')}`;
-    } else {
-        // If no scheme is provided, default to https.
-        baseUrl = `https://${parts.join('/')}`;
-    }
-
-    return { baseUrl, modelName };
-}
 
 /**
  * Recursively cleans a JSON Schema to make it compatible with target APIs like Google Gemini.
@@ -526,14 +489,9 @@ function streamTransformer(model: string) {
 
 // --- CORS Handling ---
 
-function corsHeaders() {
-    return {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, Anthropic-Version',
-    };
-}
-
-function handleOptions() {
-    return new Response(null, { headers: corsHeaders() });
+function handleOptions(res: express.Response) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, Anthropic-Version');
+    return res.status(200).end();
 }
