@@ -121,7 +121,8 @@ app.use(express.json({ limit: '10mb' }));
 // 获取环境变量
 const env: Env = {    
     OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'http://localhost:8094/v1',    
-    PORT: process.env.PORT || '8092',    
+    PORT: process.env.PORT || '8092',  
+    // 没用，我们是希望apikey透传，暂时先保留  
     OPENAI_API_KEY: process.env.OPENAI_API_KEY
 };
 
@@ -136,9 +137,11 @@ app.all('/v1/messages', async (req, res) => {
         return res.status(405).json({ error: "Method Not Allowed" });
     }
 
-    const apiKey = req.headers['x-api-key'] as string;
+    const authHeader = (req.headers['authorization'] || req.headers['Authorization']) as string | undefined;
+    const bearerMatch = authHeader && authHeader.match(/^Bearer\s+(.+)$/i);
+    const apiKey = (bearerMatch && bearerMatch[1]) || (req.headers['x-api-key'] as string);
     if (!apiKey) {
-        return res.status(401).json({ error: 'The "x-api-key" header is missing.' });
+        return res.status(401).json({ error: 'Missing API key. Provide Authorization: Bearer <key> or x-api-key header.' });
     }
 
     try {
