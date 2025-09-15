@@ -112,6 +112,7 @@ interface OpenAIRequest {
 // --- Express App Setup ---
 
 const app = express();
+app.disable('x-powered-by');
 const PORT = process.env.PORT || 8092;
 
 // 中间件
@@ -163,9 +164,9 @@ app.all('/v1/messages', async (req, res) => {
         };
 
         const openaiRequest = convertClaudeToOpenAIRequest(claudeRequest, target.modelName);
-        console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
-        console.log(`target.baseUrl: ${target.baseUrl}`);
-        console.log(`target.apiKey: ${target.apiKey}`);
+        // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
+        // console.log(`target.baseUrl: ${target.baseUrl}`);
+        // console.log(`target.apiKey: ${target.apiKey}`);
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
             headers: {
@@ -366,6 +367,12 @@ function convertClaudeToOpenAIRequest(
  * Converts a non-streaming OpenAI response to the Claude format.
  */
 function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any {
+    const mapOpenAIIdToClaude = (openaiId: string): string => {
+        if (!openaiId || typeof openaiId !== 'string') return `msg_${Math.random().toString(36).substr(2, 9)}`;
+        const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
+        const suffix = match ? match[1] : openaiId;
+        return `msg_${suffix}`;
+    };
     const choice = openaiResponse.choices[0];
     const contentBlocks: any[] = [];
     if (choice.message.content) {
@@ -382,8 +389,10 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         });
     }
     const stopReasonMap: Record<string, string> = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use" };
+    const messageId = mapOpenAIIdToClaude(openaiResponse.id);
+    console.log(`messageId: ${messageId}`);
     return {
-        id: openaiResponse.id,
+        id: messageId,
         type: "message",
         role: "assistant",
         model: model,
@@ -400,9 +409,15 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
  * Creates a transform function for the streaming response.
  */
 function streamTransformer(model: string) {
+    const mapOpenAIIdToClaude = (openaiId: string): string => {
+        if (!openaiId || typeof openaiId !== 'string') return `msg_${Math.random().toString(36).substr(2, 9)}`;
+        const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
+        const suffix = match ? match[1] : openaiId;
+        return `msg_${suffix}`;
+    };
     let initialized = false;
     let buffer = "";
-    const messageId = `msg_${Math.random().toString(36).substr(2, 9)}`;
+    let messageId: string | null = null;
     const toolCalls: { [index: number]: { id: string, name: string, args: string, claudeIndex: number, started: boolean } } = {};
     let contentBlockIndex = 0;
     const encoder = new TextEncoder();
@@ -413,11 +428,9 @@ function streamTransformer(model: string) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     };
     return (chunk: Uint8Array, controller: TransformStreamDefaultController) => {
-        if (!initialized) {
-            sendEvent(controller, 'message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-            sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
-            initialized = true;
-        }
+        // if (!initialized) {
+        //     // 延迟发送 message_start 到解析首个数据块之后
+        // }
         buffer += decoder.decode(chunk, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -447,6 +460,19 @@ function streamTransformer(model: string) {
             try {
                 const openaiChunk = JSON.parse(data);
                 const delta = openaiChunk.choices[0]?.delta;
+
+                // 第一次解析：获取 id 或备用占位 id，并发送 message_start + content_block_start
+                if (!initialized) {
+                    if (openaiChunk.id) {
+                        messageId = mapOpenAIIdToClaude(openaiChunk.id);
+                    } else {
+                        messageId = `msg_${Math.random().toString(36).substr(2, 9)}`;
+                    }
+                    console.log(`messageId: ${messageId}`);
+                    sendEvent(controller, 'message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+                    sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+                    initialized = true;
+                }
                 
                 if (openaiChunk.usage) {
                     const { prompt_tokens, completion_tokens } = openaiChunk.usage;
