@@ -28,7 +28,7 @@ dotenv.config();
 export interface Env {
     /**
      * Pre-configured route for a "haiku" model for easier access.
-     */    
+     */
     OPENAI_BASE_URL: string;
     OPENAI_API_KEY?: string;
     PORT: string;
@@ -45,8 +45,10 @@ interface ClaudeTool {
 type ClaudeContent =
     | string
     | Array<{
-    type: "text" | "image" | "tool_use" | "tool_result";
+    type: "text" | "image" | "tool_use" | "tool_result" | "thinking";
     text?: string;
+    thinking?: string;
+    signature?: string;
     source?: {
         type: "base64";
         media_type: string;
@@ -76,15 +78,27 @@ interface ClaudeMessagesRequest {
     top_k?: number;
     tools?: ClaudeTool[];
     tool_choice?: { type: "auto" | "any" | "tool"; name?: string };
+    thinking?: {
+        type: "enabled" | "disabled";
+        budget_tokens?: number;
+    };
 }
 
 // --- OpenAI API Types ---
 
 interface OpenAIMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string | Array<{ type: "text" | "image_url"; text?: string; image_url?: { url: string } }>;
+    content: string | Array<{
+        type: "text" | "image_url" | "thinking";
+        text?: string;
+        image_url?: { url: string };
+        thinking?: string;
+        signature?: string;
+    }>;
     tool_calls?: OpenAIToolCall[];
     tool_call_id?: string;
+    reasoning_content?: string;
+    thinking_blocks?: Array<{ type: "thinking"; thinking: string; signature?: string }>;
 }
 
 interface OpenAIToolCall {
@@ -107,12 +121,15 @@ interface OpenAIRequest {
     tools?: Array<{ type: "function"; function: any }>;
     tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
     stream_options?: { include_usage: boolean };
+    thinking?: {
+        type: "enabled" | "disabled";
+        budget_tokens?: number;
+    };
 }
 
 // --- Express App Setup ---
 
 const app = express();
-app.disable('x-powered-by');
 const PORT = process.env.PORT || 8092;
 
 // 中间件
@@ -120,10 +137,9 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 // 获取环境变量
-const env: Env = {    
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'http://localhost:8094/v1',    
-    PORT: process.env.PORT || '8092',  
-    // 没用，我们是希望apikey透传，暂时先保留  
+const env: Env = {
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'http://localhost:8094/v1',
+    PORT: process.env.PORT || '8092',
     OPENAI_API_KEY: process.env.OPENAI_API_KEY
 };
 
@@ -185,11 +201,11 @@ app.all('/v1/messages', async (req, res) => {
             const transformStream = new TransformStream({
                 transform: streamTransformer(claudeRequest.model),
             });
-            
+
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
-            
+
             // 将 OpenAI 响应流通过转换流传递给客户端
             if (openaiApiResponse.body) {
                 openaiApiResponse.body.pipeThrough(transformStream).pipeTo(
@@ -300,12 +316,22 @@ function convertClaudeToOpenAIRequest(
                 openaiMessages.push({ role: "user", content: message.content });
             }
         } else if (message.role === 'assistant') {
-            const textParts: string[] = [];
+            const contentBlocks: Array<{ type: "text" | "thinking"; text?: string; thinking?: string; signature?: string }> = [];
             const toolCalls: OpenAIToolCall[] = [];
             if (Array.isArray(message.content)) {
                 message.content.forEach(block => {
                     if (block.type === 'text') {
-                        textParts.push(block.text!);
+                        contentBlocks.push({ type: 'text', text: block.text! });
+                    } else if (block.type === 'thinking') {
+                        // Preserve thinking blocks in OpenAI format with signature
+                        const thinkingBlock: { type: 'thinking'; thinking: string; signature?: string } = {
+                            type: 'thinking',
+                            thinking: block.thinking || block.text || ''
+                        };
+                        if (block.signature) {
+                            thinkingBlock.signature = block.signature;
+                        }
+                        contentBlocks.push(thinkingBlock);
                     } else if (block.type === 'tool_use') {
                         toolCalls.push({
                             id: block.id!,
@@ -315,7 +341,19 @@ function convertClaudeToOpenAIRequest(
                     }
                 });
             }
-            const assistantMessage: OpenAIMessage = { role: 'assistant', content: textParts.join('\n') || null as any};
+
+            // If we have structured content blocks (thinking or multiple text blocks), use array format
+            // Otherwise, use simple string format for backward compatibility
+            let content: string | Array<{ type: "text" | "thinking"; text?: string; thinking?: string; signature?: string }>;
+            if (contentBlocks.length === 0) {
+                content = '';
+            } else if (contentBlocks.length === 1 && contentBlocks[0].type === 'text') {
+                content = contentBlocks[0].text || '';
+            } else {
+                content = contentBlocks;
+            }
+
+            const assistantMessage: OpenAIMessage = { role: 'assistant', content };
             if (toolCalls.length > 0) {
                 assistantMessage.tool_calls = toolCalls;
             }
@@ -332,6 +370,11 @@ function convertClaudeToOpenAIRequest(
         stream: claudeRequest.stream,
         stop: claudeRequest.stop_sequences,
     };
+
+    // Pass through thinking parameter if present
+    if (claudeRequest.thinking) {
+        openaiRequest.thinking = claudeRequest.thinking;
+    }
 
     if (claudeRequest.tools) {
         openaiRequest.tools = claudeRequest.tools.map((tool) => {
@@ -375,6 +418,21 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     };
     const choice = openaiResponse.choices[0];
     const contentBlocks: any[] = [];
+
+    // Handle thinking blocks first (they should appear before text content in Claude format)
+    if (choice.message.thinking_blocks && choice.message.thinking_blocks.length > 0) {
+        choice.message.thinking_blocks.forEach((block: { type: string; thinking: string; signature?: string }) => {
+            const thinkingBlock: { type: 'thinking'; thinking: string; signature?: string } = {
+                type: 'thinking',
+                thinking: block.thinking,
+            };
+            if (block.signature) {
+                thinkingBlock.signature = block.signature;
+            }
+            contentBlocks.push(thinkingBlock);
+        });
+    }
+
     if (choice.message.content) {
         contentBlocks.push({ type: 'text', text: choice.message.content });
     }
@@ -407,6 +465,7 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
 
 /**
  * Creates a transform function for the streaming response.
+ * Handles OpenAI streaming format including thinking_blocks and converts to Claude SSE format.
  */
 function streamTransformer(model: string) {
     const mapOpenAIIdToClaude = (openaiId: string): string => {
@@ -418,19 +477,49 @@ function streamTransformer(model: string) {
     let initialized = false;
     let buffer = "";
     let messageId: string | null = null;
-    const toolCalls: { [index: number]: { id: string, name: string, args: string, claudeIndex: number, started: boolean } } = {};
-    let contentBlockIndex = 0;
+    let requestId: string | null = null; // Store original OpenAI request id for signature
+    const toolCalls: { [index: number]: { id: string, name: string, args: string, claudeIndex: number, started: boolean, stopped: boolean } } = {};
+    const thinkingBlocks: { [index: number]: { content: string, claudeIndex: number, started: boolean, stopped: boolean, signature?: string } } = {};
+    let contentBlockIndex = -1; // Start at -1, will be incremented to 0 for first block
+    let textBlockStarted = false; // Track if text block has been started
+    let textContent = '';
+    let reasoningBlockStarted = false; // Track if reasoning_content block has been started
+    let reasoningContent = ''; // Track reasoning_content content
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     let inputTokens = 0;
     let outputTokens = 0;
+    let lastDelta: any = null; // Track last delta to detect transitions
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     };
     return (chunk: Uint8Array, controller: TransformStreamDefaultController) => {
-        // if (!initialized) {
-        //     // 延迟发送 message_start 到解析首个数据块之后
-        // }
+        const stopThinkingBlock = (thinkingIndex: number) => {
+            const tb = thinkingBlocks[thinkingIndex];
+            if (tb && tb.started && !tb.stopped) {
+                sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tb.claudeIndex });
+                tb.stopped = true;
+                // 每结束一个块就递增 index
+                contentBlockIndex++;
+            }
+        };
+        const stopTextBlock = () => {
+            if (textBlockStarted) {
+                sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
+                textBlockStarted = false;
+                // 每结束一个块就递增 index
+                contentBlockIndex++;
+            }
+        };
+        const stopToolBlock = (toolIndex: number) => {
+            const tc = toolCalls[toolIndex];
+            if (tc && tc.started && !tc.stopped) {
+                sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex });
+                tc.stopped = true;
+                // 每结束一个块就递增 index
+                contentBlockIndex++;
+            }
+        };
         buffer += decoder.decode(chunk, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -439,19 +528,65 @@ function streamTransformer(model: string) {
             if (!line.startsWith("data: ")) continue;
             const data = line.substring(6);
             if (data.trim() === "[DONE]") {
-                sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: 0 });
-                Object.values(toolCalls).forEach(tc => {
-                    if(tc.started) sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex });
-                });
+                // Stop all active content blocks
+                // Stop reasoning block if it's still active
+                if (reasoningBlockStarted) {
+                    const signatureValue = requestId || messageId || '';
+                    sendEvent(controller, 'content_block_delta', {
+                        type: 'content_block_delta',
+                        index: contentBlockIndex,
+                        delta: { type: 'signature_delta', signature: signatureValue }
+                    });
+                    sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
+                    reasoningBlockStarted = false;
+                    // 每结束一个块就递增 index
+                    contentBlockIndex++;
+                }
+                Object.keys(thinkingBlocks).forEach(key => stopThinkingBlock(Number(key)));
+                stopTextBlock();
+                Object.keys(toolCalls).forEach(key => stopToolBlock(Number(key)));
+
                 let finalStopReason = "end_turn";
                 try {
                     const lastChunk = JSON.parse(lines[lines.length - 2].substring(6));
                     const finishReason = lastChunk.choices[0].finish_reason;
                     if (finishReason === 'tool_calls') finalStopReason = 'tool_use';
                     if (finishReason === 'length') finalStopReason = 'max_tokens';
-                } catch {}
-                // Log final usage at stream end
-                // console.log('[stream end] usage', { inputTokens, outputTokens });
+                } catch {
+                    // Ignore parsing errors for finish_reason
+                }
+
+                // 构建完整的 Claude 响应内容
+                const claudeContent: any[] = [];
+                // Add reasoning_content as thinking block if present
+                if (reasoningContent) {
+                    const reasoningBlock: any = { type: 'thinking', thinking: reasoningContent };
+                    if (requestId || messageId) {
+                        reasoningBlock.signature = requestId || messageId;
+                    }
+                    claudeContent.push(reasoningBlock);
+                }
+                Object.values(thinkingBlocks).forEach(tb => {
+                    if (tb.started && tb.content) {
+                        const block: any = { type: 'thinking', thinking: tb.content };
+                        if (tb.signature) block.signature = tb.signature;
+                        claudeContent.push(block);
+                    }
+                });
+                if (textContent) {
+                    claudeContent.push({ type: 'text', text: textContent });
+                }
+                Object.values(toolCalls).forEach(tc => {
+                    if (tc.started) {
+                        claudeContent.push({
+                            type: 'tool_use',
+                            id: tc.id,
+                            name: tc.name,
+                            input: JSON.parse(tc.args || '{}')
+                        });
+                    }
+                });
+
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: { input_tokens: inputTokens, output_tokens: outputTokens } });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
                 controller.terminate();
@@ -461,19 +596,19 @@ function streamTransformer(model: string) {
                 const openaiChunk = JSON.parse(data);
                 const delta = openaiChunk.choices[0]?.delta;
 
-                // 第一次解析：获取 id 或备用占位 id，并发送 message_start + content_block_start
+                // 第一次解析：获取 id 或备用占位 id，并发送 message_start
                 if (!initialized) {
                     if (openaiChunk.id) {
+                        requestId = openaiChunk.id; // Store original id for signature
                         messageId = mapOpenAIIdToClaude(openaiChunk.id);
                     } else {
                         messageId = `msg_${Math.random().toString(36).substr(2, 9)}`;
                     }
                     console.log(`messageId: ${messageId}`);
                     sendEvent(controller, 'message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } });
-                    sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
                     initialized = true;
                 }
-                
+
                 if (openaiChunk.usage) {
                     const { prompt_tokens, completion_tokens } = openaiChunk.usage;
                     if (typeof prompt_tokens === 'number') {
@@ -486,20 +621,153 @@ function streamTransformer(model: string) {
                     // console.log('[stream usage]', { prompt_tokens, completion_tokens, inputTokens, outputTokens });
                 }
                 if (!delta) continue;
-                if (delta.content) {
-                    sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta.content } });
+
+                // Detect transitions between different content types
+                // If we're switching from thinking to text/tool_calls, stop thinking block
+                // 合并条件，避免重复调用 stopThinkingBlock
+                // 只处理已启动且未停止的 thinking block
+                if (lastDelta?.thinking_blocks && !delta.thinking_blocks && (delta.content || delta.tool_calls)) {
+                    Object.keys(thinkingBlocks).forEach(key => {
+                        const tb = thinkingBlocks[Number(key)];
+                        if (tb && tb.started && !tb.stopped) {
+                            stopThinkingBlock(Number(key));
+                        }
+                    });
                 }
+                // If we're switching from text to tool calls, stop text block
+                if (lastDelta?.content && delta.tool_calls && !delta.content) {
+                    stopTextBlock();
+                }
+
+                // If we're switching from reasoning_content to thinking_blocks, stop reasoning_content block
+                // thinking_blocks 优先级高于 reasoning_content
+                if (lastDelta?.reasoning_content !== undefined && !delta.reasoning_content && delta.thinking_blocks && reasoningBlockStarted) {
+                    const signatureValue = requestId || messageId || '';
+                    sendEvent(controller, 'content_block_delta', {
+                        type: 'content_block_delta',
+                        index: contentBlockIndex,
+                        delta: { type: 'signature_delta', signature: signatureValue }
+                    });
+                    sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
+                    reasoningBlockStarted = false;
+                    // 每结束一个块就递增 index
+                    contentBlockIndex++;
+                }
+
+                // Handle reasoning_content transition - output signature when transitioning away from reasoning_content
+                // 只有当 thinking_blocks 不存在时才处理 reasoning_content
+                if (lastDelta?.reasoning_content !== undefined && delta.reasoning_content === undefined && reasoningBlockStarted && !delta.thinking_blocks) {
+                    // reasoning_content has ended, output signature and stop the reasoning block
+                    const signatureValue = requestId || messageId || '';
+                    sendEvent(controller, 'content_block_delta', {
+                        type: 'content_block_delta',
+                        index: contentBlockIndex,
+                        delta: { type: 'signature_delta', signature: signatureValue }
+                    });
+                    // Stop the reasoning block
+                    sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
+                    reasoningBlockStarted = false;
+                    // 每结束一个块就递增 index
+                    contentBlockIndex++;
+                }
+
+                lastDelta = delta;
+
+                // Handle thinking blocks first (they should come before text)
+                // thinking_blocks 优先级高于 reasoning_content
+                if (delta.thinking_blocks && delta.thinking_blocks.length > 0) {
+                    for(const thinking_delta of delta.thinking_blocks) {
+                        const thinkingIndex = 0; // Usually there's only one thinking block
+                        if (!thinkingBlocks[thinkingIndex]) {
+                            thinkingBlocks[thinkingIndex] = { content: '', claudeIndex: 0, started: false, stopped: false };
+                        }
+                        // Store signature if present
+                        if (thinking_delta.signature) {
+                            thinkingBlocks[thinkingIndex].signature = thinking_delta.signature;
+                        }
+                        // Start thinking block if we have thinking content OR if we just received a signature for an already-started block
+                        if (thinking_delta.thinking || (thinking_delta.signature && thinkingBlocks[thinkingIndex].started)) {
+                            if (!thinkingBlocks[thinkingIndex].started) {
+                                // 如果是第一个 block，从 -1 递增到 0
+                                if (contentBlockIndex === -1) {
+                                    contentBlockIndex = 0;
+                                }
+                                thinkingBlocks[thinkingIndex].claudeIndex = contentBlockIndex;
+                                thinkingBlocks[thinkingIndex].started = true;
+                                thinkingBlocks[thinkingIndex].stopped = false;
+                                // Include signature in content_block_start if available
+                                const contentBlock: any = { type: 'thinking', thinking: '' };
+                                if (thinkingBlocks[thinkingIndex].signature) {
+                                    contentBlock.signature = thinkingBlocks[thinkingIndex].signature;
+                                }
+                                sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: contentBlockIndex, content_block: contentBlock });
+                            }
+                            // Only send thinking_delta if there's actual content
+                            if (thinking_delta.thinking) {
+                                thinkingBlocks[thinkingIndex].content += thinking_delta.thinking;
+                                sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: thinkingBlocks[thinkingIndex].claudeIndex, delta: { type: 'thinking_delta', thinking: thinking_delta.thinking } });
+                            }
+                            // If we just received the signature for an already-started block, send a signature_delta
+                            if (thinking_delta.signature && thinkingBlocks[thinkingIndex].started) {
+                                sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: thinkingBlocks[thinkingIndex].claudeIndex, delta: { type: 'signature_delta', signature: thinking_delta.signature } });
+                            }
+                        }
+                    }
+                }
+
+                // Handle reasoning_content (convert to thinking)
+                // 只有当 thinking_blocks 不存在时才处理 reasoning_content
+                if (delta.reasoning_content && !delta.thinking_blocks) {
+                    if (!reasoningBlockStarted) {
+                        // Start a new thinking block for reasoning_content
+                        // 如果是第一个 block，从 -1 递增到 0
+                        if (contentBlockIndex === -1) {
+                            contentBlockIndex = 0;
+                        }
+                        reasoningBlockStarted = true;
+                        sendEvent(controller, 'content_block_start', {
+                            type: 'content_block_start',
+                            index: contentBlockIndex,
+                            content_block: { type: 'thinking', thinking: '' }
+                        });
+                    }
+                    reasoningContent += delta.reasoning_content;
+                    sendEvent(controller, 'content_block_delta', {
+                        type: 'content_block_delta',
+                        index: contentBlockIndex,
+                        delta: { type: 'thinking_delta', thinking: delta.reasoning_content }
+                    });
+                }
+
+                // Handle text content
+                if (delta.content) {
+                    if (!textBlockStarted) {
+                        // 如果是第一个 block，从 -1 递增到 0
+                        if (contentBlockIndex === -1) {
+                            contentBlockIndex = 0;
+                        }
+                        sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: contentBlockIndex, content_block: { type: 'text', text: '' } });
+                        textBlockStarted = true;
+                    }
+                    textContent += delta.content;
+                    sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: contentBlockIndex, delta: { type: 'text_delta', text: delta.content } });
+                }
+
+                // Handle tool calls
                 if (delta.tool_calls) {
                     for(const tc_delta of delta.tool_calls) {
                         const index = tc_delta.index;
                         if (!toolCalls[index]) {
-                            toolCalls[index] = { id: '', name: '', args: '', claudeIndex: 0, started: false };
+                            toolCalls[index] = { id: '', name: '', args: '', claudeIndex: 0, started: false, stopped: false };
                         }
                         if (tc_delta.id) toolCalls[index].id = tc_delta.id;
                         if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name;
                         if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments;
                         if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
-                            contentBlockIndex++;
+                            // 如果是第一个 block，从 -1 递增到 0
+                            if (contentBlockIndex === -1) {
+                                contentBlockIndex = 0;
+                            }
                             toolCalls[index].claudeIndex = contentBlockIndex;
                             toolCalls[index].started = true;
                             sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: contentBlockIndex, content_block: { type: 'tool_use', id: toolCalls[index].id, name: toolCalls[index].name, input: {} } });
