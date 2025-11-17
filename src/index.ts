@@ -416,21 +416,39 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         const suffix = match ? match[1] : openaiId;
         return `msg_${suffix}`;
     };
+    // 提取 id 的后缀部分（去掉前缀），用于签名
+    const extractIdSuffix = (id: string): string => {
+        if (!id || typeof id !== 'string') return '';
+        const match = id.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
+        return match ? match[1] : id;
+    };
     const choice = openaiResponse.choices[0];
     const contentBlocks: any[] = [];
+    const messageId = mapOpenAIIdToClaude(openaiResponse.id);
+    const originalId = openaiResponse.id; // 原始的 OpenAI id，用于签名
 
     // Handle thinking blocks first (they should appear before text content in Claude format)
+    // 如果 thinking_blocks 存在，优先使用 thinking_blocks
     if (choice.message.thinking_blocks && choice.message.thinking_blocks.length > 0) {
         choice.message.thinking_blocks.forEach((block: { type: string; thinking: string; signature?: string }) => {
             const thinkingBlock: { type: 'thinking'; thinking: string; signature?: string } = {
                 type: 'thinking',
                 thinking: block.thinking,
             };
+            // thinking_blocks 存在时，使用 block 的 signature 或原始 id
             if (block.signature) {
                 thinkingBlock.signature = block.signature;
             }
             contentBlocks.push(thinkingBlock);
         });
+    } else if (choice.message.reasoning_content) {
+        // thinking_blocks 不存在时，使用 reasoning_content，签名使用 id 后缀（去掉前缀）
+        const thinkingBlock: { type: 'thinking'; thinking: string; signature: string } = {
+            type: 'thinking',
+            thinking: choice.message.reasoning_content,
+            signature: extractIdSuffix(originalId), // 签名使用 id 后缀（去掉前缀）
+        };
+        contentBlocks.push(thinkingBlock);
     }
 
     if (choice.message.content) {
@@ -447,7 +465,6 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         });
     }
     const stopReasonMap: Record<string, string> = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use" };
-    const messageId = mapOpenAIIdToClaude(openaiResponse.id);
     console.log(`messageId: ${messageId}`);
     return {
         id: messageId,
@@ -473,6 +490,12 @@ function streamTransformer(model: string) {
         const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
         const suffix = match ? match[1] : openaiId;
         return `msg_${suffix}`;
+    };
+    // 提取 id 的后缀部分（去掉前缀），用于 reasoning_content 的签名
+    const extractIdSuffix = (id: string | null): string => {
+        if (!id || typeof id !== 'string') return '';
+        const match = id.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
+        return match ? match[1] : id;
     };
     let initialized = false;
     let buffer = "";
@@ -531,7 +554,8 @@ function streamTransformer(model: string) {
                 // Stop all active content blocks
                 // Stop reasoning block if it's still active
                 if (reasoningBlockStarted) {
-                    const signatureValue = requestId || messageId || '';
+                    // reasoning_content 的签名使用 id 后缀（去掉前缀）
+                    const signatureValue = extractIdSuffix(requestId || messageId);
                     sendEvent(controller, 'content_block_delta', {
                         type: 'content_block_delta',
                         index: contentBlockIndex,
@@ -561,8 +585,10 @@ function streamTransformer(model: string) {
                 // Add reasoning_content as thinking block if present
                 if (reasoningContent) {
                     const reasoningBlock: any = { type: 'thinking', thinking: reasoningContent };
-                    if (requestId || messageId) {
-                        reasoningBlock.signature = requestId || messageId;
+                    // reasoning_content 的签名使用 id 后缀（去掉前缀）
+                    const signatureValue = extractIdSuffix(requestId || messageId);
+                    if (signatureValue) {
+                        reasoningBlock.signature = signatureValue;
                     }
                     claudeContent.push(reasoningBlock);
                 }
@@ -642,7 +668,8 @@ function streamTransformer(model: string) {
                 // If we're switching from reasoning_content to thinking_blocks, stop reasoning_content block
                 // thinking_blocks 优先级高于 reasoning_content
                 if (lastDelta?.reasoning_content !== undefined && !delta.reasoning_content && delta.thinking_blocks && reasoningBlockStarted) {
-                    const signatureValue = requestId || messageId || '';
+                    // reasoning_content 的签名使用 id 后缀（去掉前缀）
+                    const signatureValue = extractIdSuffix(requestId || messageId);
                     sendEvent(controller, 'content_block_delta', {
                         type: 'content_block_delta',
                         index: contentBlockIndex,
@@ -658,7 +685,8 @@ function streamTransformer(model: string) {
                 // 只有当 thinking_blocks 不存在时才处理 reasoning_content
                 if (lastDelta?.reasoning_content !== undefined && delta.reasoning_content === undefined && reasoningBlockStarted && !delta.thinking_blocks) {
                     // reasoning_content has ended, output signature and stop the reasoning block
-                    const signatureValue = requestId || messageId || '';
+                    // reasoning_content 的签名使用 id 后缀（去掉前缀）
+                    const signatureValue = extractIdSuffix(requestId || messageId);
                     sendEvent(controller, 'content_block_delta', {
                         type: 'content_block_delta',
                         index: contentBlockIndex,
