@@ -183,12 +183,29 @@ app.all('/v1/messages', async (req, res) => {
         // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
         // console.log(`target.baseUrl: ${target.baseUrl}`);
         // console.log(`target.apiKey: ${target.apiKey}`);
+
+        const upstreamHeaders: Record<string, string> = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${target.apiKey}`,
+        };
+
+        for (const [headerKey, headerValue] of Object.entries(req.headers)) {
+            if (!headerValue) continue;
+            const lowerKey = headerKey.toLowerCase();
+            if (['authorization', 'content-length', 'content-type', 'host', 'connection', 'accept-encoding'].includes(lowerKey)) {
+                continue;
+            }
+
+            if (Array.isArray(headerValue)) {
+                upstreamHeaders[headerKey] = headerValue.join(',');
+            } else if (typeof headerValue === 'string') {
+                upstreamHeaders[headerKey] = headerValue;
+            }
+        }
+
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${target.apiKey}`,
-            },
+            headers: upstreamHeaders,
             body: JSON.stringify(openaiRequest),
         });
 
