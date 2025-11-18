@@ -197,6 +197,12 @@ app.all('/v1/messages', async (req, res) => {
             return res.status(openaiApiResponse.status).json(JSON.parse(errorBody));
         }
 
+        // 透传 http_x_reqid header
+        const reqIdHeader = openaiApiResponse.headers.get('http_x_reqid');
+        if (reqIdHeader) {
+            res.setHeader('http_x_reqid', reqIdHeader);
+        }
+
         if (claudeRequest.stream) {
             const transformStream = new TransformStream({
                 transform: streamTransformer(claudeRequest.model),
