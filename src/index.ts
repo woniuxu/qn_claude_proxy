@@ -183,12 +183,19 @@ app.all('/v1/messages', async (req, res) => {
         // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
         // console.log(`target.baseUrl: ${target.baseUrl}`);
         // console.log(`target.apiKey: ${target.apiKey}`);
+        // 组装上游请求 headers，并透传下游的 X-Real-IP
+        const upstreamHeaders: Record<string, string> = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${target.apiKey}`,
+        };
+        const realIpHeader = req.headers['x-real-ip'] as string | string[] | undefined;
+        if (realIpHeader) {
+            upstreamHeaders['X-Real-IP'] = Array.isArray(realIpHeader) ? realIpHeader[0] : realIpHeader;
+        }
+
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${target.apiKey}`,
-            },
+            headers: upstreamHeaders,
             body: JSON.stringify(openaiRequest),
         });
 
