@@ -610,11 +610,30 @@ function streamTransformer(model: string) {
                 }
                 Object.values(toolCalls).forEach(tc => {
                     if (tc.started) {
+                        let parsedInput: any = {};
+                        const rawArgs = tc.args;
+                        if (typeof rawArgs === 'string' && rawArgs.trim().length > 0) {
+                            try {
+                                parsedInput = JSON.parse(rawArgs);
+                            } catch (err) {
+                                // 避免因为工具参数 JSON 不完整/不合法导致整个流崩溃，同时打点方便排查
+                                console.warn('[streamTransformer] Failed to parse tool call args, returning raw string instead', {
+                                    err,
+                                    requestId,
+                                    messageId,
+                                    toolCallId: tc.id,
+                                    toolName: tc.name,
+                                    rawArgs,
+                                });
+                                parsedInput = { _raw: rawArgs };
+                            }
+                        }
+
                         claudeContent.push({
                             type: 'tool_use',
                             id: tc.id,
                             name: tc.name,
-                            input: JSON.parse(tc.args || '{}')
+                            input: parsedInput
                         });
                     }
                 });
