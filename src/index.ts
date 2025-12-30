@@ -212,33 +212,18 @@ app.all('/v1/messages', async (req, res) => {
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
 
-            // 将 OpenAI 响应流通过转换流传递给客户端，附加错误兜底避免未处理异常导致进程崩溃
+            // 将 OpenAI 响应流通过转换流传递给客户端
             if (openaiApiResponse.body) {
-                openaiApiResponse.body
-                    .pipeThrough(transformStream)
-                    .pipeTo(
-                        new WritableStream({
-                            write(chunk) {
-                                res.write(chunk);
-                            },
-                            close() {
-                                res.end();
-                            }
-                        })
-                    )
-                    .catch((err) => {
-                        // 常见错误：上游超时/断开（如 UND_ERR_BODY_TIMEOUT）会触发 aborted/terminated
-                        console.error('[stream] piping failed', {
-                            message: err instanceof Error ? err.message : err,
-                            name: err instanceof Error ? err.name : undefined,
-                        });
-                        if (!res.headersSent) {
-                            res.status(502).json({ error: 'Upstream stream aborted' });
-                        } else {
-                            // SSE 已经开始，尽量平滑结束
+                openaiApiResponse.body.pipeThrough(transformStream).pipeTo(
+                    new WritableStream({
+                        write(chunk) {
+                            res.write(chunk);
+                        },
+                        close() {
                             res.end();
                         }
-                    });
+                    })
+                );
             }
         } else {
             const openaiResponse = await openaiApiResponse.json();
