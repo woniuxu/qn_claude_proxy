@@ -1,6 +1,6 @@
 edit js
-docker build -t qn_claude_proxy:6.0 .
-docker tag qn_claude_proxy:6.0  10.170.100.179:5000/qn_claude_proxy:6.0
+docker build -t qn_claude_proxy:2.0 .
+docker tag qn_claud_proxy:2.0  10.170.100.179:5000/qn_claude_proxy:1.0
 docker push 10.170.100.179:5000/qn_claude_proxy:2.0
 
 on 166

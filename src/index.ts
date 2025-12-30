@@ -610,26 +610,11 @@ function streamTransformer(model: string) {
                 }
                 Object.values(toolCalls).forEach(tc => {
                     if (tc.started) {
-                        let parsedInput: any = {};
-                        if (tc.args && tc.args.trim().length > 0) {
-                            try {
-                                parsedInput = JSON.parse(tc.args);
-                            } catch (err) {
-                                // 防御：上游返回的 arguments 可能不是合法 JSON，避免进程崩溃
-                                console.warn('[stream] failed to parse tool args, fallback to raw string', {
-                                    id: tc.id,
-                                    name: tc.name,
-                                    args: tc.args,
-                                    error: err instanceof Error ? err.message : err
-                                });
-                                parsedInput = tc.args;
-                            }
-                        }
                         claudeContent.push({
                             type: 'tool_use',
                             id: tc.id,
                             name: tc.name,
-                            input: parsedInput
+                            input: JSON.parse(tc.args || '{}')
                         });
                     }
                 });
@@ -811,10 +796,7 @@ function streamTransformer(model: string) {
                         }
                         if (tc_delta.id) toolCalls[index].id = tc_delta.id;
                         if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name;
-                        if (tc_delta.function?.arguments !== undefined) {
-                            const argPiece = tc_delta.function.arguments;
-                            toolCalls[index].args += typeof argPiece === 'string' ? argPiece : JSON.stringify(argPiece);
-                        }
+                        if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments;
                         if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
                             // 如果是第一个 block，从 -1 递增到 0
                             if (contentBlockIndex === -1) {
