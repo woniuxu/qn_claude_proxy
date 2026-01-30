@@ -187,6 +187,7 @@ app.all('/v1/messages', async (req, res) => {
         const upstreamHeaders: Record<string, string> = {
             "Content-Type": "application/json",
             Authorization: `Bearer ${target.apiKey}`,
+            "X-Qiniu-Source": "anthropic",
         };
         const realIpHeader = req.headers['x-real-ip'] as string | string[] | undefined;
         if (realIpHeader) {
