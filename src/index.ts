@@ -183,18 +183,40 @@ app.all('/v1/messages', async (req, res) => {
         // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
         // console.log(`target.baseUrl: ${target.baseUrl}`);
         // console.log(`target.apiKey: ${target.apiKey}`);
+        // 组装上游请求 headers，并透传下游的 X-Real-IP、User-Agent 和 Referer
+        const upstreamHeaders: Record<string, string> = {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${target.apiKey}`,
+            "X-Qiniu-Source": "anthropic",
+        };
+        const realIpHeader = req.headers['x-real-ip'] as string | string[] | undefined;
+        if (realIpHeader) {
+            upstreamHeaders['X-Real-IP'] = Array.isArray(realIpHeader) ? realIpHeader[0] : realIpHeader;
+        }
+        const userAgentHeader = req.headers['user-agent'] as string | string[] | undefined;
+        if (userAgentHeader) {
+            upstreamHeaders['User-Agent'] = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
+        }
+        const refererHeader = req.headers['referer'] as string | string[] | undefined;
+        if (refererHeader) {
+            upstreamHeaders['Referer'] = Array.isArray(refererHeader) ? refererHeader[0] : refererHeader;
+        }
+
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${target.apiKey}`,
-            },
+            headers: upstreamHeaders,
             body: JSON.stringify(openaiRequest),
         });
 
         if (!openaiApiResponse.ok) {
             const errorBody = await openaiApiResponse.text();
             return res.status(openaiApiResponse.status).json(JSON.parse(errorBody));
+        }
+
+        // 透传 http_x_reqid header
+        const reqIdHeader = openaiApiResponse.headers.get('http_x_reqid');
+        if (reqIdHeader) {
+            res.setHeader('http_x_reqid', reqIdHeader);
         }
 
         if (claudeRequest.stream) {
@@ -449,6 +471,24 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     const stopReasonMap: Record<string, string> = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use" };
     const messageId = mapOpenAIIdToClaude(openaiResponse.id);
     console.log(`messageId: ${messageId}`);
+
+    // Build usage object with cache details if available
+    const usage: any = {
+        input_tokens: openaiResponse.usage.prompt_tokens,
+        output_tokens: openaiResponse.usage.completion_tokens,
+    };
+
+    // Add cache-related details if present
+    if (openaiResponse.usage.prompt_tokens_details) {
+        const details = openaiResponse.usage.prompt_tokens_details;
+        if (typeof details.cached_tokens === 'number') {
+            usage.cache_read_input_tokens = details.cached_tokens;
+        }
+        if (typeof details.cache_creation_tokens === 'number') {
+            usage.cache_creation_input_tokens = details.cache_creation_tokens;
+        }
+    }
+
     return {
         id: messageId,
         type: "message",
@@ -456,10 +496,7 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         model: model,
         content: contentBlocks,
         stop_reason: stopReasonMap[choice.finish_reason] || "end_turn",
-        usage: {
-            input_tokens: openaiResponse.usage.prompt_tokens,
-            output_tokens: openaiResponse.usage.completion_tokens,
-        },
+        usage: usage,
     };
 }
 
@@ -486,6 +523,8 @@ function streamTransformer(model: string) {
     const decoder = new TextDecoder();
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
     let lastDelta: any = null; // Track last delta to detect transitions
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
@@ -557,7 +596,19 @@ function streamTransformer(model: string) {
                     }
                 });
 
-                sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: { input_tokens: inputTokens, output_tokens: outputTokens } });
+                // Build usage object with cache details
+                const usageData: any = {
+                    input_tokens: inputTokens,
+                    output_tokens: outputTokens
+                };
+                if (cacheReadTokens > 0) {
+                    usageData.cache_read_input_tokens = cacheReadTokens;
+                }
+                if (cacheCreationTokens > 0) {
+                    usageData.cache_creation_input_tokens = cacheCreationTokens;
+                }
+
+                sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
                 controller.terminate();
                 return;
@@ -579,12 +630,21 @@ function streamTransformer(model: string) {
                 }
 
                 if (openaiChunk.usage) {
-                    const { prompt_tokens, completion_tokens } = openaiChunk.usage;
+                    const { prompt_tokens, completion_tokens, prompt_tokens_details } = openaiChunk.usage;
                     if (typeof prompt_tokens === 'number') {
                         inputTokens = Math.max(inputTokens, prompt_tokens);
                     }
                     if (typeof completion_tokens === 'number') {
                         outputTokens = Math.max(outputTokens, completion_tokens);
+                    }
+                    // Handle cache-related token details
+                    if (prompt_tokens_details) {
+                        if (typeof prompt_tokens_details.cached_tokens === 'number') {
+                            cacheReadTokens = Math.max(cacheReadTokens, prompt_tokens_details.cached_tokens);
+                        }
+                        if (typeof prompt_tokens_details.cache_creation_tokens === 'number') {
+                            cacheCreationTokens = Math.max(cacheCreationTokens, prompt_tokens_details.cache_creation_tokens);
+                        }
                     }
                     // Log each time usage appears in the stream
                     // console.log('[stream usage]', { prompt_tokens, completion_tokens, inputTokens, outputTokens });
