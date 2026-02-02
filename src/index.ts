@@ -490,20 +490,29 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     console.log(`messageId: ${messageId}`);
 
     // Build usage object with cache details if available
-    const usage: any = {
-        input_tokens: openaiResponse.usage.prompt_tokens,
-        output_tokens: openaiResponse.usage.completion_tokens,
-    };
-
-    // Add cache-related details if present
+    // Anthropic: total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens
+    // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
+    let inputTokens = openaiResponse.usage.prompt_tokens;
+    let cacheReadTokens = 0;
+    let cacheCreationTokens = 0;
     if (openaiResponse.usage.prompt_tokens_details) {
         const details = openaiResponse.usage.prompt_tokens_details;
         if (typeof details.cached_tokens === 'number') {
-            usage.cache_read_input_tokens = details.cached_tokens;
+            cacheReadTokens = details.cached_tokens;
         }
         if (typeof details.cache_creation_tokens === 'number') {
-            usage.cache_creation_input_tokens = details.cache_creation_tokens;
+            cacheCreationTokens = details.cache_creation_tokens;
         }
+    }
+    const usage: any = {
+        input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
+        output_tokens: openaiResponse.usage.completion_tokens,
+    };
+    if (cacheReadTokens > 0) {
+        usage.cache_read_input_tokens = cacheReadTokens;
+    }
+    if (cacheCreationTokens > 0) {
+        usage.cache_creation_input_tokens = cacheCreationTokens;
     }
 
     return {
@@ -653,8 +662,10 @@ function streamTransformer(model: string) {
                 });
 
                 // Build usage object with cache details
+                // Anthropic: total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens
+                // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
                 const usageData: any = {
-                    input_tokens: inputTokens,
+                    input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
                     output_tokens: outputTokens
                 };
                 if (cacheReadTokens > 0) {
