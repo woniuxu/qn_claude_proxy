@@ -109,6 +109,8 @@ interface OpenAIMessage {
     tool_call_id?: string;
     reasoning_content?: string;
     thinking_blocks?: Array<{ type: "thinking"; thinking: string; signature?: string }>;
+    // 透传整个 message 级别的 cache_control（例如 tool_result 场景）
+    cache_control?: any;
 }
 
 interface OpenAIToolCall {
@@ -347,11 +349,18 @@ function convertClaudeToOpenAIRequest(
 
                 if (toolResults.length > 0) {
                     toolResults.forEach(block => {
-                        openaiMessages.push({
+                        const toolMessage: OpenAIMessage = {
                             role: 'tool',
                             tool_call_id: block.tool_use_id!,
-                            content: typeof block.content === 'string' ? block.content : JSON.stringify(block.content),
-                        });
+                            content: typeof block.content === 'string'
+                                ? block.content
+                                : JSON.stringify(block.content),
+                        };
+                        // 透传 tool_result block 上的 cache_control
+                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
+                            toolMessage.cache_control = (block as ClaudeTextBlock).cache_control;
+                        }
+                        openaiMessages.push(toolMessage);
                     });
                 }
 
