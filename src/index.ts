@@ -507,13 +507,9 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     const usage: any = {
         input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
         output_tokens: openaiResponse.usage.completion_tokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
     };
-    if (cacheReadTokens > 0) {
-        usage.cache_read_input_tokens = cacheReadTokens;
-    }
-    if (cacheCreationTokens > 0) {
-        usage.cache_creation_input_tokens = cacheCreationTokens;
-    }
 
     return {
         id: messageId,
@@ -666,14 +662,10 @@ function streamTransformer(model: string) {
                 // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
                 const usageData: any = {
                     input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
-                    output_tokens: outputTokens
+                    output_tokens: outputTokens,
+                    cache_read_input_tokens: cacheReadTokens,
+                    cache_creation_input_tokens: cacheCreationTokens,
                 };
-                if (cacheReadTokens > 0) {
-                    usageData.cache_read_input_tokens = cacheReadTokens;
-                }
-                if (cacheCreationTokens > 0) {
-                    usageData.cache_creation_input_tokens = cacheCreationTokens;
-                }
 
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
