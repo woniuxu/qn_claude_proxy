@@ -42,9 +42,8 @@ interface ClaudeTool {
     input_schema: any;
 }
 
-type ClaudeContent =
-    | string
-    | Array<{
+// 扩展 Claude 文本块，支持 cache_control 之类的附加控制字段
+interface ClaudeTextBlock {
     type: "text" | "image" | "tool_use" | "tool_result" | "thinking";
     text?: string;
     thinking?: string;
@@ -59,7 +58,13 @@ type ClaudeContent =
     input?: any;
     tool_use_id?: string;
     content?: any;
-}>;
+    // 透传 Anthropic 的 cache_control 字段（例如 { type: "ephemeral" }）
+    cache_control?: any;
+}
+
+type ClaudeContent =
+    | string
+    | ClaudeTextBlock[];
 
 interface ClaudeMessage {
     role: "user" | "assistant";
@@ -86,15 +91,20 @@ interface ClaudeMessagesRequest {
 
 // --- OpenAI API Types ---
 
+// 扩展 OpenAI 文本块类型，允许附带 cache_control 等控制字段透传
+interface OpenAIContentBlock {
+    type: "text" | "image_url" | "thinking";
+    text?: string;
+    image_url?: { url: string };
+    thinking?: string;
+    signature?: string;
+    // 透传 Anthropic 的 cache_control 字段
+    cache_control?: any;
+}
+
 interface OpenAIMessage {
     role: "system" | "user" | "assistant" | "tool";
-    content: string | Array<{
-        type: "text" | "image_url" | "thinking";
-        text?: string;
-        image_url?: { url: string };
-        thinking?: string;
-        signature?: string;
-    }>;
+    content: string | OpenAIContentBlock[];
     tool_calls?: OpenAIToolCall[];
     tool_call_id?: string;
     reasoning_content?: string;
@@ -344,7 +354,41 @@ function convertClaudeToOpenAIRequest(
                 }
 
                 if (otherContent.length > 0) {
-                    openaiMessages.push({ role: "user", content: otherContent.map(block => block.type === 'text' ? {type: 'text', text: block.text} : {type: 'image_url', image_url: {url: `data:${block.source!.media_type};base64,${block.source!.data}`}} ) as any});
+                    const mappedContent: OpenAIContentBlock[] = otherContent.map((block) => {
+                        // 文本块：透传 cache_control 等附加字段
+                        if (block.type === 'text') {
+                            const base: OpenAIContentBlock = {
+                                type: 'text',
+                                text: block.text,
+                            };
+                            if (block.cache_control !== undefined) {
+                                base.cache_control = block.cache_control;
+                            }
+                            return base;
+                        }
+
+                        // 图片块：同样透传 cache_control
+                        if (block.type === 'image' && block.source) {
+                            const base: OpenAIContentBlock = {
+                                type: 'image_url',
+                                image_url: {
+                                    url: `data:${block.source.media_type};base64,${block.source.data}`,
+                                },
+                            };
+                            if (block.cache_control !== undefined) {
+                                base.cache_control = block.cache_control;
+                            }
+                            return base;
+                        }
+
+                        // 其他类型（如 thinking/tool_use 等）目前按原样透传，防止误删字段
+                        return block as any;
+                    });
+
+                    openaiMessages.push({
+                        role: "user",
+                        content: mappedContent,
+                    });
                 }
             } else {
                 openaiMessages.push({ role: "user", content: message.content });
