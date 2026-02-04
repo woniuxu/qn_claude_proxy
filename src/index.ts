@@ -118,6 +118,8 @@ interface OpenAIToolCall {
         name: string;
         arguments: string;
     };
+    // 透传来自 Claude tool_use block 的 cache_control
+    cache_control?: any;
 }
 
 interface OpenAIRequest {
@@ -394,35 +396,50 @@ function convertClaudeToOpenAIRequest(
                 openaiMessages.push({ role: "user", content: message.content });
             }
         } else if (message.role === 'assistant') {
-            const contentBlocks: Array<{ type: "text" | "thinking"; text?: string; thinking?: string; signature?: string }> = [];
+            const contentBlocks: OpenAIContentBlock[] = [];
             const toolCalls: OpenAIToolCall[] = [];
             if (Array.isArray(message.content)) {
                 message.content.forEach(block => {
                     if (block.type === 'text') {
-                        contentBlocks.push({ type: 'text', text: block.text! });
+                        const textBlock: OpenAIContentBlock = {
+                            type: 'text',
+                            text: block.text || '',
+                        };
+                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
+                            textBlock.cache_control = (block as ClaudeTextBlock).cache_control;
+                        }
+                        contentBlocks.push(textBlock);
                     } else if (block.type === 'thinking') {
-                        // Preserve thinking blocks in OpenAI format with signature
-                        const thinkingBlock: { type: 'thinking'; thinking: string; signature?: string } = {
+                        // Preserve thinking blocks in OpenAI format with signature，并透传 cache_control
+                        const thinkingBlock: OpenAIContentBlock = {
                             type: 'thinking',
                             thinking: block.thinking || block.text || ''
                         };
                         if (block.signature) {
                             thinkingBlock.signature = block.signature;
                         }
+                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
+                            thinkingBlock.cache_control = (block as ClaudeTextBlock).cache_control;
+                        }
                         contentBlocks.push(thinkingBlock);
                     } else if (block.type === 'tool_use') {
-                        toolCalls.push({
+                        const toolCall: OpenAIToolCall = {
                             id: block.id!,
                             type: 'function',
                             function: { name: block.name!, arguments: JSON.stringify(block.input || {}) },
-                        });
+                        };
+                        // 透传 tool_use block 上的 cache_control
+                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
+                            toolCall.cache_control = (block as ClaudeTextBlock).cache_control;
+                        }
+                        toolCalls.push(toolCall);
                     }
                 });
             }
 
             // If we have structured content blocks (thinking or multiple text blocks), use array format
             // Otherwise, use simple string format for backward compatibility
-            let content: string | Array<{ type: "text" | "thinking"; text?: string; thinking?: string; signature?: string }>;
+            let content: string | OpenAIContentBlock[];
             if (contentBlocks.length === 0) {
                 content = '';
             } else if (contentBlocks.length === 1 && contentBlocks[0].type === 'text') {
