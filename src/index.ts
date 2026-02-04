@@ -660,11 +660,18 @@ function streamTransformer(model: string) {
                 }
                 Object.values(toolCalls).forEach(tc => {
                     if (tc.started) {
+                        let input_tmp: object;
+                        try {
+                            input_tmp = JSON.parse(tc.args || '{}');
+                        } catch {
+                            input_tmp = { input_str: tc.args || '' };
+                            console.log(`[tool_use] Invalid JSON in args, fallback to input_str. messageId=${messageId}, name=${tc.name}, args=${tc.args}`);
+                        }
                         claudeContent.push({
                             type: 'tool_use',
                             id: tc.id,
                             name: tc.name,
-                            input: JSON.parse(tc.args || '{}')
+                            input:input_tmp
                         });
                     }
                 });
