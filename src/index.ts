@@ -183,20 +183,32 @@ app.all('/v1/messages', async (req, res) => {
         // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
         // console.log(`target.baseUrl: ${target.baseUrl}`);
         // console.log(`target.apiKey: ${target.apiKey}`);
-        // 组装上游请求 headers，并透传下游的 X-Real-IP、User-Agent 和 Referer
+        // 组装上游请求 headers，透传 User-Agent/Referer，并将真实 IP 追加到 User-Agent 做记录
         const upstreamHeaders: Record<string, string> = {
             "Content-Type": "application/json",
             Authorization: `Bearer ${target.apiKey}`,
             "X-Qiniu-Source": "anthropic",
         };
+        let realIp: string | undefined;
         const realIpHeader = req.headers['x-real-ip'] as string | string[] | undefined;
         if (realIpHeader) {
-            upstreamHeaders['X-Real-IP'] = Array.isArray(realIpHeader) ? realIpHeader[0] : realIpHeader;
+            realIp = Array.isArray(realIpHeader) ? realIpHeader[0]?.trim() : realIpHeader?.trim();
         }
+        if (!realIp) {
+            const forwardedFor = req.headers['x-forwarded-for'] as string | string[] | undefined;
+            const forwarded = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+            if (forwarded) realIp = forwarded.split(',')[0].trim();
+        }
+        if (!realIp && req.socket?.remoteAddress) realIp = req.socket.remoteAddress;
+        if (!realIp && req.ip) realIp = req.ip;
+
+        if (realIp) {
+            upstreamHeaders['X-Real-IP'] = realIp;
+        }
+
         const userAgentHeader = req.headers['user-agent'] as string | string[] | undefined;
-        if (userAgentHeader) {
-            upstreamHeaders['User-Agent'] = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader;
-        }
+        const baseUserAgent = userAgentHeader ? (Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader) : '';
+        upstreamHeaders['User-Agent'] = realIp ? `${baseUserAgent} [X-Real-IP: ${realIp}]`.trim() : (baseUserAgent || '');
         const refererHeader = req.headers['referer'] as string | string[] | undefined;
         if (refererHeader) {
             upstreamHeaders['Referer'] = Array.isArray(refererHeader) ? refererHeader[0] : refererHeader;
