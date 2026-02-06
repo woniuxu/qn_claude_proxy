@@ -382,14 +382,18 @@ function convertClaudeToOpenAIRequest(
                             return base;
                         }
 
-                        // 图片块：同样透传 cache_control
-                        if (block.type === 'image' && block.source && block.source.type === 'base64') {
-                            const src = block.source as { type: "base64"; media_type: string; data: string };
+                        // 图片块：支持 base64 和 url 两种来源，透传 cache_control
+                        if (block.type === 'image' && block.source) {
+                            let imageUrl: string;
+                            if (block.source.type === 'url') {
+                                imageUrl = (block.source as { type: "url"; url: string }).url;
+                            } else {
+                                const src = block.source as { type: "base64"; media_type: string; data: string };
+                                imageUrl = `data:${src.media_type};base64,${src.data}`;
+                            }
                             const base: OpenAIContentBlock = {
                                 type: 'image_url',
-                                image_url: {
-                                    url: `data:${src.media_type};base64,${src.data}`,
-                                },
+                                image_url: { url: imageUrl },
                             };
                             if (block.cache_control !== undefined) {
                                 base.cache_control = block.cache_control;
