@@ -44,7 +44,7 @@ interface ClaudeTool {
 
 // 扩展 Claude 文本块，支持 cache_control 之类的附加控制字段
 interface ClaudeTextBlock {
-    type: "text" | "image" | "tool_use" | "tool_result" | "thinking";
+    type: "text" | "image" | "document" | "tool_use" | "tool_result" | "thinking";
     text?: string;
     thinking?: string;
     signature?: string;
@@ -52,6 +52,9 @@ interface ClaudeTextBlock {
         type: "base64";
         media_type: string;
         data: string;
+    } | {
+        type: "url";
+        url: string;
     };
     id?: string;
     name?: string;
@@ -93,11 +96,12 @@ interface ClaudeMessagesRequest {
 
 // 扩展 OpenAI 文本块类型，允许附带 cache_control 等控制字段透传
 interface OpenAIContentBlock {
-    type: "text" | "image_url" | "thinking";
+    type: "text" | "image_url" | "thinking" | "file";
     text?: string;
     image_url?: { url: string };
     thinking?: string;
     signature?: string;
+    file?: { file_id: string };
     // 透传 Anthropic 的 cache_control 字段
     cache_control?: any;
 }
@@ -378,13 +382,38 @@ function convertClaudeToOpenAIRequest(
                             return base;
                         }
 
-                        // 图片块：同样透传 cache_control
+                        // 图片块：支持 base64 和 url 两种来源，透传 cache_control
                         if (block.type === 'image' && block.source) {
+                            let imageUrl: string;
+                            if (block.source.type === 'url') {
+                                imageUrl = (block.source as { type: "url"; url: string }).url;
+                            } else {
+                                const src = block.source as { type: "base64"; media_type: string; data: string };
+                                imageUrl = `data:${src.media_type};base64,${src.data}`;
+                            }
                             const base: OpenAIContentBlock = {
                                 type: 'image_url',
-                                image_url: {
-                                    url: `data:${block.source.media_type};base64,${block.source.data}`,
-                                },
+                                image_url: { url: imageUrl },
+                            };
+                            if (block.cache_control !== undefined) {
+                                base.cache_control = block.cache_control;
+                            }
+                            return base;
+                        }
+
+                        // 文档块：将 Claude document 格式转换为 chatnio file 格式
+                        if (block.type === 'document' && block.source) {
+                            let fileId: string;
+                            if (block.source.type === 'url') {
+                                fileId = (block.source as { type: "url"; url: string }).url;
+                            } else {
+                                // base64 来源：构造 data URL
+                                const src = block.source as { type: "base64"; media_type: string; data: string };
+                                fileId = `data:${src.media_type};base64,${src.data}`;
+                            }
+                            const base: OpenAIContentBlock = {
+                                type: 'file',
+                                file: { file_id: fileId },
                             };
                             if (block.cache_control !== undefined) {
                                 base.cache_control = block.cache_control;
