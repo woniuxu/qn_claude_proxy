@@ -16,6 +16,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+// import { appendFile } from 'fs/promises';
+// import { join } from 'path';
 
 // 加载环境变量
 dotenv.config();
@@ -231,6 +233,33 @@ app.all('/v1/messages', async (req, res) => {
         if (refererHeader) {
             upstreamHeaders['Referer'] = Array.isArray(refererHeader) ? refererHeader[0] : refererHeader;
         }
+
+        // 透传用户请求的其他 header 到上游（不覆盖已设置的）
+        const skipKeys = new Set(['host', 'content-length', 'content-type', 'authorization', 'connection']);
+        const passthroughPrefixes = ['x-'];
+        const passthroughNames = ['accept', 'accept-language', 'accept-encoding'];
+        for (const [key, value] of Object.entries(req.headers)) {
+            if (value === undefined) continue;
+            const lower = key.toLowerCase();
+            if (skipKeys.has(lower)) continue;
+            if (upstreamHeaders[lower] !== undefined) continue;
+            const valueStr = Array.isArray(value) ? value[0] : value;
+            if (passthroughNames.includes(lower) || passthroughPrefixes.some(p => lower.startsWith(p))) {
+                upstreamHeaders[key] = valueStr;
+            }
+        }
+
+        // 临时调试：打印发往上游的请求 body 和 headers（注意包含完整对话内容）
+        // 已暂时关闭，如需再次启用，取消以下代码注释即可
+        // const debugLogPath = join(process.cwd(), 'debug_upstream_request.jsonl');
+        // const logEntry = {
+        //     timestamp: new Date().toISOString(),
+        //     upstreamHeaders,
+        //     request: openaiRequest
+        // };
+        // appendFile(debugLogPath, JSON.stringify(logEntry) + '\n').catch(err => {
+        //     console.error('[DEBUG] Failed to write debug log:', err);
+        // });
 
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
