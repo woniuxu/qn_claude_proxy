@@ -16,8 +16,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-// import { appendFile } from 'fs/promises';
-// import { join } from 'path';
+import { appendFile } from 'fs/promises';
+import { join } from 'path';
 
 // 加载环境变量
 dotenv.config();
@@ -463,6 +463,16 @@ function convertClaudeToOpenAIRequest(
                 openaiMessages.push({ role: "user", content: message.content });
             }
         } else if (message.role === 'assistant') {
+            // assistant 消息既可能是字符串（旧格式），也可能是 content block 数组（推荐格式）
+            // 如果是字符串，直接按文本透传，避免被误处理成空字符串
+            if (!Array.isArray(message.content)) {
+                openaiMessages.push({
+                    role: 'assistant',
+                    content: message.content || '',
+                });
+                continue;
+            }
+
             const contentBlocks: OpenAIContentBlock[] = [];
             const toolCalls: OpenAIToolCall[] = [];
             if (Array.isArray(message.content)) {
