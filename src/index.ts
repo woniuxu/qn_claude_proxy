@@ -16,8 +16,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { appendFile } from 'fs/promises';
-import { join } from 'path';
+// import { appendFile } from 'fs/promises';
+// import { join } from 'path';
 
 // 加载环境变量
 dotenv.config();
@@ -936,9 +936,11 @@ function streamTransformer(model: string) {
                         // Start thinking block if we have thinking content OR if we just received a signature for an already-started block
                         if (thinking_delta.thinking || (thinking_delta.signature && thinkingBlocks[thinkingIndex].started)) {
                             if (!thinkingBlocks[thinkingIndex].started) {
-                                // 如果是第一个 block，从 -1 递增到 0
+                                // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                                 if (contentBlockIndex === -1) {
                                     contentBlockIndex = 0;
+                                } else {
+                                    contentBlockIndex++;
                                 }
                                 thinkingBlocks[thinkingIndex].claudeIndex = contentBlockIndex;
                                 thinkingBlocks[thinkingIndex].started = true;
@@ -968,9 +970,11 @@ function streamTransformer(model: string) {
                 if (delta.reasoning_content && !delta.thinking_blocks) {
                     if (!reasoningBlockStarted) {
                         // Start a new thinking block for reasoning_content
-                        // 如果是第一个 block，从 -1 递增到 0
+                        // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                         if (contentBlockIndex === -1) {
                             contentBlockIndex = 0;
+                        } else {
+                            contentBlockIndex++;
                         }
                         reasoningBlockStarted = true;
                         sendEvent(controller, 'content_block_start', {
@@ -990,9 +994,11 @@ function streamTransformer(model: string) {
                 // Handle text content
                 if (delta.content) {
                     if (!textBlockStarted) {
-                        // 如果是第一个 block，从 -1 递增到 0
+                        // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                         if (contentBlockIndex === -1) {
                             contentBlockIndex = 0;
+                        } else {
+                            contentBlockIndex++;
                         }
                         sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: contentBlockIndex, content_block: { type: 'text', text: '' } });
                         textBlockStarted = true;
@@ -1012,9 +1018,11 @@ function streamTransformer(model: string) {
                         if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name;
                         if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments;
                         if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
-                            // 如果是第一个 block，从 -1 递增到 0
+                            // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                             if (contentBlockIndex === -1) {
                                 contentBlockIndex = 0;
+                            } else {
+                                contentBlockIndex++;
                             }
                             toolCalls[index].claudeIndex = contentBlockIndex;
                             toolCalls[index].started = true;
