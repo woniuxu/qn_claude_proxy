@@ -762,16 +762,12 @@ function streamTransformer(model: string) {
             if (tb && tb.started && !tb.stopped) {
                 sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tb.claudeIndex });
                 tb.stopped = true;
-                // 每结束一个块就递增 index
-                contentBlockIndex++;
             }
         };
         const stopTextBlock = () => {
             if (textBlockStarted) {
                 sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
                 textBlockStarted = false;
-                // 每结束一个块就递增 index
-                contentBlockIndex++;
             }
         };
         const stopToolBlock = (toolIndex: number) => {
@@ -779,8 +775,6 @@ function streamTransformer(model: string) {
             if (tc && tc.started && !tc.stopped) {
                 sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex });
                 tc.stopped = true;
-                // 每结束一个块就递增 index
-                contentBlockIndex++;
             }
         };
         buffer += decoder.decode(chunk, { stream: true });
@@ -803,8 +797,6 @@ function streamTransformer(model: string) {
                     });
                     sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
                     reasoningBlockStarted = false;
-                    // 每结束一个块就递增 index
-                    contentBlockIndex++;
                 }
                 Object.keys(thinkingBlocks).forEach(key => stopThinkingBlock(Number(key)));
                 stopTextBlock();
@@ -943,8 +935,6 @@ function streamTransformer(model: string) {
                     });
                     sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
                     reasoningBlockStarted = false;
-                    // 每结束一个块就递增 index
-                    contentBlockIndex++;
                 }
 
                 // Handle reasoning_content transition - output signature when transitioning away from reasoning_content
