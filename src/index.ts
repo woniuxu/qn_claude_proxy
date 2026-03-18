@@ -76,6 +76,14 @@ interface ClaudeMessage {
     content: ClaudeContent;
 }
 
+// Claude 结构化输出配置类型
+interface ClaudeOutputConfig {
+    format?: {
+        type: "json_schema";
+        schema: { [key: string]: any };
+    } | null;
+}
+
 interface ClaudeMessagesRequest {
     model: string;
     messages: ClaudeMessage[];
@@ -92,6 +100,7 @@ interface ClaudeMessagesRequest {
         type: "enabled" | "disabled";
         budget_tokens?: number;
     };
+    output_config?: ClaudeOutputConfig;
 }
 
 // --- OpenAI API Types ---
@@ -144,6 +153,15 @@ interface OpenAIRequest {
     thinking?: {
         type: "enabled" | "disabled";
         budget_tokens?: number;
+    };
+    // OpenAI 结构化输出 response_format
+    response_format?: {
+        type: "text" | "json_object" | "json_schema";
+        json_schema?: {
+            name: string;
+            schema: { [key: string]: any };
+            strict?: boolean;
+        };
     };
 }
 
@@ -546,6 +564,21 @@ function convertClaudeToOpenAIRequest(
     // Pass through thinking parameter if present
     if (claudeRequest.thinking) {
         openaiRequest.thinking = claudeRequest.thinking;
+    }
+
+    // 将 Claude output_config.format 转换为 OpenAI response_format
+    if (claudeRequest.output_config?.format) {
+        const format = claudeRequest.output_config.format;
+        if (format.type === 'json_schema' && format.schema) {
+            openaiRequest.response_format = {
+                type: 'json_schema',
+                json_schema: {
+                    name: 'json_output',  // Claude 没有 name 字段，OpenAI 要求必填，使用默认值
+                    schema: format.schema, // 直接透传 schema，不做清理（strict 模式需要 additionalProperties）
+                    strict: true,
+                },
+            };
+        }
     }
 
     if (claudeRequest.tools) {
