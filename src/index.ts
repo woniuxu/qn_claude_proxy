@@ -316,7 +316,14 @@ app.all('/v1/messages', async (req, res) => {
                             res.end();
                         }
                     })
-                );
+                ).catch((err: any) => {
+                    // 上游连接中断（如 BodyTimeoutError）时，pipeTo 的 Promise 会 reject。
+                    // 若不捕获，会变成 unhandledRejection 导致 Node.js 进程崩溃。
+                    console.error('[stream] upstream pipe error:', err?.message || err);
+                    if (!res.writableEnded) {
+                        res.end();
+                    }
+                });
             }
         } else {
             const openaiResponse = await openaiApiResponse.json();
@@ -332,6 +339,12 @@ app.all('/v1/messages', async (req, res) => {
 // 健康检查端点
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// 全局兜底：捕获所有未处理的 Promise rejection，防止进程崩溃
+process.on('unhandledRejection', (reason: any, promise) => {
+    console.error('[unhandledRejection] Unhandled promise rejection:', reason?.message || reason);
+    // 仅记录日志，不退出进程，保持服务可用
 });
 
 // 启动服务器
