@@ -112,7 +112,7 @@ interface OpenAIContentBlock {
     image_url?: { url: string };
     thinking?: string;
     signature?: string;
-    file?: { file_id: string };
+    file?: { file_id?: string; file_data?: string };
     // 透传 Anthropic 的 cache_control 字段
     cache_control?: any;
 }
@@ -461,19 +461,20 @@ function convertClaudeToOpenAIRequest(
                             return base;
                         }
 
-                        // 文档块：将 Claude document 格式转换为 chatnio file 格式
+                        // 文档块：将 Claude document 格式转换为 OpenAI file 格式
+                        // base64 来源使用 file_data，URL 来源使用 file_id
                         if (block.type === 'document' && block.source) {
-                            let fileId: string;
+                            let file: { file_id?: string; file_data?: string };
                             if (block.source.type === 'url') {
-                                fileId = (block.source as { type: "url"; url: string }).url;
+                                file = { file_id: (block.source as { type: "url"; url: string }).url };
                             } else {
-                                // base64 来源：构造 data URL
+                                // base64 来源：构造 data URL 放入 file_data
                                 const src = block.source as { type: "base64"; media_type: string; data: string };
-                                fileId = `data:${src.media_type};base64,${src.data}`;
+                                file = { file_data: `data:${src.media_type};base64,${src.data}` };
                             }
                             const base: OpenAIContentBlock = {
                                 type: 'file',
-                                file: { file_id: fileId },
+                                file,
                             };
                             if (block.cache_control !== undefined) {
                                 base.cache_control = block.cache_control;
