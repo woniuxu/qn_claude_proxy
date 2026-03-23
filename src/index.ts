@@ -45,7 +45,7 @@ interface ClaudeTool {
 }
 
 // 扩展 Claude 文本块，支持 cache_control 之类的附加控制字段
-interface ClaudeTextBlock {
+export interface ClaudeTextBlock {
     type: "text" | "image" | "document" | "tool_use" | "tool_result" | "thinking";
     text?: string;
     thinking?: string;
@@ -84,7 +84,7 @@ interface ClaudeOutputConfig {
     } | null;
 }
 
-interface ClaudeMessagesRequest {
+export interface ClaudeMessagesRequest {
     model: string;
     messages: ClaudeMessage[];
     system?: string;
@@ -106,7 +106,7 @@ interface ClaudeMessagesRequest {
 // --- OpenAI API Types ---
 
 // 扩展 OpenAI 文本块类型，允许附带 cache_control 等控制字段透传
-interface OpenAIContentBlock {
+export interface OpenAIContentBlock {
     type: "text" | "image_url" | "thinking" | "file";
     text?: string;
     image_url?: { url: string };
@@ -117,7 +117,7 @@ interface OpenAIContentBlock {
     cache_control?: any;
 }
 
-interface OpenAIMessage {
+export interface OpenAIMessage {
     role: "system" | "user" | "assistant" | "tool";
     content: string | OpenAIContentBlock[];
     tool_calls?: OpenAIToolCall[];
@@ -392,9 +392,30 @@ function recursivelyCleanSchema(schema: any): any {
 }
 
 /**
+ * 将 Claude 图片块转换为 OpenAI image_url 格式
+ */
+export function convertImageBlockToOpenAI(block: ClaudeTextBlock): OpenAIContentBlock {
+    let imageUrl: string;
+    if (block.source!.type === 'url') {
+        imageUrl = (block.source as { type: "url"; url: string }).url;
+    } else {
+        const src = block.source as { type: "base64"; media_type: string; data: string };
+        imageUrl = `data:${src.media_type};base64,${src.data}`;
+    }
+    const base: OpenAIContentBlock = {
+        type: 'image_url',
+        image_url: { url: imageUrl },
+    };
+    if (block.cache_control !== undefined) {
+        base.cache_control = block.cache_control;
+    }
+    return base;
+}
+
+/**
  * Converts a Claude API request to the OpenAI format.
  */
-function convertClaudeToOpenAIRequest(
+export function convertClaudeToOpenAIRequest(
     claudeRequest: ClaudeMessagesRequest,
     modelName: string
 ): OpenAIRequest {
@@ -413,18 +434,54 @@ function convertClaudeToOpenAIRequest(
 
                 if (toolResults.length > 0) {
                     toolResults.forEach(block => {
+                        let toolContentStr: string;
+                        const imageContentBlocks: OpenAIContentBlock[] = [];
+
+                        if (typeof block.content === 'string') {
+                            // 简单字符串内容，直接使用
+                            toolContentStr = block.content;
+                        } else if (Array.isArray(block.content)) {
+                            // 数组内容：分离图片块和非图片块
+                            const nonImageParts: any[] = [];
+                            for (const item of block.content) {
+                                if (item.type === 'image' && item.source) {
+                                    // 图片块：转换为 OpenAI image_url 格式，稍后放入 user 消息
+                                    imageContentBlocks.push(convertImageBlockToOpenAI(item));
+                                } else {
+                                    nonImageParts.push(item);
+                                }
+                            }
+                            // 非图片部分：如果只有一个文本块，提取其 text；否则 JSON.stringify
+                            if (nonImageParts.length === 1 && nonImageParts[0].type === 'text' && nonImageParts[0].text) {
+                                toolContentStr = nonImageParts[0].text;
+                            } else if (nonImageParts.length > 0) {
+                                toolContentStr = JSON.stringify(nonImageParts);
+                            } else {
+                                // 内容全是图片，tool 消息放一个占位文本
+                                toolContentStr = '[image]';
+                            }
+                        } else {
+                            toolContentStr = JSON.stringify(block.content);
+                        }
+
                         const toolMessage: OpenAIMessage = {
                             role: 'tool',
                             tool_call_id: block.tool_use_id!,
-                            content: typeof block.content === 'string'
-                                ? block.content
-                                : JSON.stringify(block.content),
+                            content: toolContentStr,
                         };
                         // 透传 tool_result block 上的 cache_control
                         if ((block as ClaudeTextBlock).cache_control !== undefined) {
                             toolMessage.cache_control = (block as ClaudeTextBlock).cache_control;
                         }
                         openaiMessages.push(toolMessage);
+
+                        // 如果有图片块，创建一个紧跟在 tool 消息后面的 user 消息
+                        if (imageContentBlocks.length > 0) {
+                            openaiMessages.push({
+                                role: 'user',
+                                content: imageContentBlocks,
+                            });
+                        }
                     });
                 }
 
@@ -444,21 +501,7 @@ function convertClaudeToOpenAIRequest(
 
                         // 图片块：支持 base64 和 url 两种来源，透传 cache_control
                         if (block.type === 'image' && block.source) {
-                            let imageUrl: string;
-                            if (block.source.type === 'url') {
-                                imageUrl = (block.source as { type: "url"; url: string }).url;
-                            } else {
-                                const src = block.source as { type: "base64"; media_type: string; data: string };
-                                imageUrl = `data:${src.media_type};base64,${src.data}`;
-                            }
-                            const base: OpenAIContentBlock = {
-                                type: 'image_url',
-                                image_url: { url: imageUrl },
-                            };
-                            if (block.cache_control !== undefined) {
-                                base.cache_control = block.cache_control;
-                            }
-                            return base;
+                            return convertImageBlockToOpenAI(block);
                         }
 
                         // 文档块：将 Claude document 格式转换为 OpenAI file 格式
