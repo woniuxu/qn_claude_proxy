@@ -78,6 +78,7 @@ interface ClaudeMessage {
 
 // Claude 结构化输出配置类型
 interface ClaudeOutputConfig {
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
     format?: {
         type: "json_schema";
         schema: { [key: string]: any };
@@ -97,8 +98,9 @@ export interface ClaudeMessagesRequest {
     tools?: ClaudeTool[];
     tool_choice?: { type: "auto" | "any" | "tool"; name?: string };
     thinking?: {
-        type: "enabled" | "disabled";
+        type: "enabled" | "disabled" | "adaptive";
         budget_tokens?: number;
+        display?: "summarized";
     };
     output_config?: ClaudeOutputConfig;
 }
@@ -151,8 +153,9 @@ interface OpenAIRequest {
     tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
     stream_options?: { include_usage: boolean };
     thinking?: {
-        type: "enabled" | "disabled";
+        type: "enabled" | "disabled" | "adaptive";
         budget_tokens?: number;
+        display?: "summarized";
     };
     // OpenAI 结构化输出 response_format
     response_format?: {
@@ -162,6 +165,9 @@ interface OpenAIRequest {
             schema: { [key: string]: any };
             strict?: boolean;
         };
+    };
+    output_config?: {
+        effort?: "low" | "medium" | "high" | "xhigh" | "max";
     };
 }
 
@@ -661,6 +667,14 @@ export function convertClaudeToOpenAIRequest(
                 },
             };
         }
+    }
+
+    // 透传 Claude output_config.effort 到上游（用于推理强度控制）
+    if (claudeRequest.output_config?.effort) {
+        openaiRequest.output_config = {
+            ...(openaiRequest.output_config || {}),
+            effort: claudeRequest.output_config.effort,
+        };
     }
 
     if (claudeRequest.tools) {
