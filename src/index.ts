@@ -96,7 +96,7 @@ export interface ClaudeMessagesRequest {
     top_p?: number;
     top_k?: number;
     tools?: ClaudeTool[];
-    tool_choice?: { type: "auto" | "any" | "tool"; name?: string };
+    tool_choice?: { type: "auto" | "any" | "none" | "tool"; name?: string };
     thinking?: {
         type: "enabled" | "disabled" | "adaptive";
         budget_tokens?: number;
@@ -694,6 +694,8 @@ export function convertClaudeToOpenAIRequest(
     if (claudeRequest.tool_choice) {
         if (claudeRequest.tool_choice.type === 'auto' || claudeRequest.tool_choice.type === 'any') {
             openaiRequest.tool_choice = 'auto';
+        } else if (claudeRequest.tool_choice.type === 'none') {
+            openaiRequest.tool_choice = 'none';
         } else if (claudeRequest.tool_choice.type === 'tool') {
             openaiRequest.tool_choice = { type: 'function', function: { name: claudeRequest.tool_choice.name! }};
         }
