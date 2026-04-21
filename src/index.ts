@@ -189,6 +189,15 @@ function sanitizeHeadersForLog(headers: Record<string, string>): Record<string, 
     return sanitized;
 }
 
+function stringifyForDebug(value: unknown): string {
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return `{"_debug_error":"failed_to_stringify","message":"${errorMessage}"}`;
+    }
+}
+
 // 中间件
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -287,12 +296,13 @@ app.all('/v1/messages', async (req, res) => {
         }
 
         if (DEBUG_UPSTREAM_IO) {
-            console.log('[upstream][request]', {
+            const debugRequestLog = {
                 url: `${target.baseUrl}/chat/completions`,
                 method: 'POST',
                 headers: sanitizeHeadersForLog(upstreamHeaders),
                 body: openaiRequest,
-            });
+            };
+            console.log(`[upstream][request] ${stringifyForDebug(debugRequestLog)}`);
         }
 
         // 临时调试：打印发往上游的请求 body 和 headers（注意包含完整对话内容）
@@ -356,7 +366,7 @@ app.all('/v1/messages', async (req, res) => {
         } else {
             const openaiResponse = await openaiApiResponse.json();
             if (DEBUG_UPSTREAM_IO) {
-                console.log('[upstream][response][non-stream]', openaiResponse);
+                console.log(`[upstream][response][non-stream] ${stringifyForDebug(openaiResponse)}`);
             }
             const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, claudeRequest.model);
             return res.json(claudeResponse);
