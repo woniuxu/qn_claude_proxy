@@ -78,6 +78,7 @@ interface ClaudeMessage {
 
 // Claude 结构化输出配置类型
 interface ClaudeOutputConfig {
+    effort?: "low" | "medium" | "high" | "xhigh" | "max";
     format?: {
         type: "json_schema";
         schema: { [key: string]: any };
@@ -95,10 +96,11 @@ export interface ClaudeMessagesRequest {
     top_p?: number;
     top_k?: number;
     tools?: ClaudeTool[];
-    tool_choice?: { type: "auto" | "any" | "tool"; name?: string };
+    tool_choice?: { type: "auto" | "any" | "none" | "tool"; name?: string };
     thinking?: {
-        type: "enabled" | "disabled";
+        type: "enabled" | "disabled" | "adaptive";
         budget_tokens?: number;
+        display?: "summarized";
     };
     output_config?: ClaudeOutputConfig;
 }
@@ -151,8 +153,9 @@ interface OpenAIRequest {
     tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
     stream_options?: { include_usage: boolean };
     thinking?: {
-        type: "enabled" | "disabled";
+        type: "enabled" | "disabled" | "adaptive";
         budget_tokens?: number;
+        display?: "summarized";
     };
     // OpenAI 结构化输出 response_format
     response_format?: {
@@ -163,12 +166,37 @@ interface OpenAIRequest {
             strict?: boolean;
         };
     };
+    output_config?: {
+        effort?: "low" | "medium" | "high" | "xhigh" | "max";
+    };
 }
 
 // --- Express App Setup ---
 
 const app = express();
 const PORT = process.env.PORT || 8092;
+const DEBUG_STOP_REASON = process.env.DEBUG_STOP_REASON === '1';
+const DEBUG_UPSTREAM_IO = process.env.DEBUG_UPSTREAM_IO === '1';
+
+function sanitizeHeadersForLog(headers: Record<string, string>): Record<string, string> {
+    const sanitized: Record<string, string> = { ...headers };
+    if (sanitized.Authorization) {
+        sanitized.Authorization = 'Bearer ***';
+    }
+    if (sanitized.authorization) {
+        sanitized.authorization = 'Bearer ***';
+    }
+    return sanitized;
+}
+
+function stringifyForDebug(value: unknown): string {
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return `{"_debug_error":"failed_to_stringify","message":"${errorMessage}"}`;
+    }
+}
 
 // 中间件
 app.use(cors());
@@ -267,6 +295,16 @@ app.all('/v1/messages', async (req, res) => {
             }
         }
 
+        if (DEBUG_UPSTREAM_IO) {
+            const debugRequestLog = {
+                url: `${target.baseUrl}/chat/completions`,
+                method: 'POST',
+                headers: sanitizeHeadersForLog(upstreamHeaders),
+                body: openaiRequest,
+            };
+            console.log(`[upstream][request] ${stringifyForDebug(debugRequestLog)}`);
+        }
+
         // 临时调试：打印发往上游的请求 body 和 headers（注意包含完整对话内容）
         // 已暂时关闭，如需再次启用，取消以下代码注释即可
         // const debugLogPath = join(process.cwd(), 'debug_upstream_request.jsonl');
@@ -298,7 +336,7 @@ app.all('/v1/messages', async (req, res) => {
 
         if (claudeRequest.stream) {
             const transformStream = new TransformStream({
-                transform: streamTransformer(claudeRequest.model),
+                transform: streamTransformer(claudeRequest.model, DEBUG_UPSTREAM_IO),
             });
 
             res.setHeader('Content-Type', 'text/event-stream');
@@ -327,6 +365,9 @@ app.all('/v1/messages', async (req, res) => {
             }
         } else {
             const openaiResponse = await openaiApiResponse.json();
+            if (DEBUG_UPSTREAM_IO) {
+                console.log(`[upstream][response][non-stream] ${stringifyForDebug(openaiResponse)}`);
+            }
             const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, claudeRequest.model);
             return res.json(claudeResponse);
         }
@@ -638,6 +679,14 @@ export function convertClaudeToOpenAIRequest(
         }
     }
 
+    // 透传 Claude output_config.effort 到上游（用于推理强度控制）
+    if (claudeRequest.output_config?.effort) {
+        openaiRequest.output_config = {
+            ...(openaiRequest.output_config || {}),
+            effort: claudeRequest.output_config.effort,
+        };
+    }
+
     if (claudeRequest.tools) {
         openaiRequest.tools = claudeRequest.tools.map((tool) => {
             const cleanedParameters = recursivelyCleanSchema(tool.input_schema);
@@ -655,6 +704,8 @@ export function convertClaudeToOpenAIRequest(
     if (claudeRequest.tool_choice) {
         if (claudeRequest.tool_choice.type === 'auto' || claudeRequest.tool_choice.type === 'any') {
             openaiRequest.tool_choice = 'auto';
+        } else if (claudeRequest.tool_choice.type === 'none') {
+            openaiRequest.tool_choice = 'none';
         } else if (claudeRequest.tool_choice.type === 'tool') {
             openaiRequest.tool_choice = { type: 'function', function: { name: claudeRequest.tool_choice.name! }};
         }
@@ -766,7 +817,7 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
  * Creates a transform function for the streaming response.
  * Handles OpenAI streaming format including thinking_blocks and converts to Claude SSE format.
  */
-function streamTransformer(model: string) {
+function streamTransformer(model: string, debugUpstreamIo = false) {
     const mapOpenAIIdToClaude = (openaiId: string): string => {
         if (!openaiId || typeof openaiId !== 'string') return `msg_${Math.random().toString(36).substr(2, 9)}`;
         const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
@@ -797,6 +848,7 @@ function streamTransformer(model: string) {
     let cacheReadTokens = 0;
     let cacheCreationTokens = 0;
     let lastDelta: any = null; // Track last delta to detect transitions
+    let lastFinishReasonFromChunks: string | null = null;
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     };
@@ -827,6 +879,9 @@ function streamTransformer(model: string) {
         // removed per-chunk reinitialization of inputTokens/outputTokens to preserve totals across chunks
         for (const line of lines) {
             if (!line.startsWith("data: ")) continue;
+            if (debugUpstreamIo) {
+                console.log(`[upstream][response][stream-line] ${line}`);
+            }
             const data = line.substring(6);
             if (data.trim() === "[DONE]") {
                 // Stop all active content blocks
@@ -848,12 +903,26 @@ function streamTransformer(model: string) {
 
                 let finalStopReason = "end_turn";
                 try {
-                    const lastChunk = JSON.parse(lines[lines.length - 2].substring(6));
-                    const finishReason = lastChunk.choices[0].finish_reason;
+                    if (DEBUG_STOP_REASON) {
+                        console.log(`[stop_reason][DONE] messageId=${messageId} lines_count=${lines.length} tail=${JSON.stringify(lines.slice(-3))} last_finish_reason_seen=${lastFinishReasonFromChunks}`);
+                    }
+                    // Prefer finish_reason captured from normal chunk parsing.
+                    // Fallback to historical line-based parsing only when missing.
+                    let finishReason = lastFinishReasonFromChunks;
+                    if (!finishReason) {
+                        const lastChunk = JSON.parse(lines[lines.length - 2].substring(6));
+                        finishReason = lastChunk.choices[0].finish_reason;
+                    }
                     if (finishReason === 'tool_calls') finalStopReason = 'tool_use';
                     if (finishReason === 'length') finalStopReason = 'max_tokens';
-                } catch {
-                    // Ignore parsing errors for finish_reason
+                    if (DEBUG_STOP_REASON) {
+                        console.log(`[stop_reason][DONE] parsed_finish_reason=${finishReason} final_stop_reason=${finalStopReason} messageId=${messageId}`);
+                    }
+                } catch (error) {
+                    if (DEBUG_STOP_REASON) {
+                        const errorMessage = error instanceof Error ? error.message : String(error);
+                        console.log(`[stop_reason][DONE] parse_failed messageId=${messageId} error=${errorMessage} fallback_final_stop_reason=${finalStopReason} last_finish_reason_seen=${lastFinishReasonFromChunks}`);
+                    }
                 }
 
                 // 构建完整的 Claude 响应内容
@@ -913,6 +982,13 @@ function streamTransformer(model: string) {
             }
             try {
                 const openaiChunk = JSON.parse(data);
+                const chunkFinishReason = openaiChunk?.choices?.[0]?.finish_reason;
+                if (typeof chunkFinishReason === 'string') {
+                    lastFinishReasonFromChunks = chunkFinishReason;
+                    if (DEBUG_STOP_REASON) {
+                        console.log(`[stop_reason][chunk] messageId=${messageId} finish_reason=${chunkFinishReason}`);
+                    }
+                }
                 const delta = openaiChunk.choices[0]?.delta;
 
                 // 第一次解析：获取 id 或备用占位 id，并发送 message_start
