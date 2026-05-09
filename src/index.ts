@@ -341,6 +341,7 @@ app.all('/v1/messages', async (req, res) => {
 
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('X-Accel-Buffering', 'no');
             res.setHeader('Connection', 'keep-alive');
 
             // 将 OpenAI 响应流通过转换流传递给客户端
