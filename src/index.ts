@@ -150,7 +150,7 @@ interface OpenAIRequest {
     stop?: string[];
     stream?: boolean;
     tools?: Array<{ type: "function"; function: any }>;
-    tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
+    tool_choice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } };
     stream_options?: { include_usage: boolean };
     thinking?: {
         type: "enabled" | "disabled" | "adaptive";
@@ -703,8 +703,10 @@ export function convertClaudeToOpenAIRequest(
     }
 
     if (claudeRequest.tool_choice) {
-        if (claudeRequest.tool_choice.type === 'auto' || claudeRequest.tool_choice.type === 'any') {
+        if (claudeRequest.tool_choice.type === 'auto') {
             openaiRequest.tool_choice = 'auto';
+        } else if (claudeRequest.tool_choice.type === 'any') {
+            openaiRequest.tool_choice = 'required';
         } else if (claudeRequest.tool_choice.type === 'none') {
             openaiRequest.tool_choice = 'none';
         } else if (claudeRequest.tool_choice.type === 'tool') {
