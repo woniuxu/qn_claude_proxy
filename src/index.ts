@@ -200,7 +200,7 @@ function stringifyForDebug(value: unknown): string {
 
 // 中间件
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '100mb' }));
 
 // 获取环境变量
 const env: Env = {
