@@ -454,6 +454,46 @@ export function convertImageBlockToOpenAI(block: ClaudeTextBlock): OpenAIContent
     return base;
 }
 
+function extractCacheCreationTokens(details: any): number {
+    if (!details || typeof details !== 'object') return 0;
+    if (typeof details.cache_creation_input_tokens === 'number') {
+        return details.cache_creation_input_tokens;
+    }
+    // Backward compatibility: some upstreams still use cache_creation_tokens.
+    if (typeof details.cache_creation_tokens === 'number') {
+        return details.cache_creation_tokens;
+    }
+    if (details.cache_creation && typeof details.cache_creation === 'object') {
+        // Qwen may only provide per-cache-type token counts in cache_creation.
+        return Object.values(details.cache_creation).reduce((sum: number, value: any) => {
+            return typeof value === 'number' ? sum + value : sum;
+        }, 0);
+    }
+    return 0;
+}
+
+function extractPromptCacheDetails(promptTokensDetails: any): {
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+    cacheCreation?: any;
+    cacheType?: string;
+} {
+    if (!promptTokensDetails || typeof promptTokensDetails !== 'object') {
+        return { cacheReadTokens: 0, cacheCreationTokens: 0 };
+    }
+
+    const cacheReadTokens = typeof promptTokensDetails.cached_tokens === 'number' ? promptTokensDetails.cached_tokens : 0;
+    const cacheCreationTokens = extractCacheCreationTokens(promptTokensDetails);
+    const cacheCreation = (promptTokensDetails.cache_creation && typeof promptTokensDetails.cache_creation === 'object')
+        ? promptTokensDetails.cache_creation
+        : undefined;
+    const cacheType = (typeof promptTokensDetails.cache_type === 'string' && promptTokensDetails.cache_type)
+        ? promptTokensDetails.cache_type
+        : undefined;
+
+    return { cacheReadTokens, cacheCreationTokens, cacheCreation, cacheType };
+}
+
 /**
  * Converts a Claude API request to the OpenAI format.
  */
@@ -786,24 +826,26 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     // Build usage object with cache details if available
     // Anthropic: total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens
     // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
-    let inputTokens = openaiResponse.usage.prompt_tokens;
-    let cacheReadTokens = 0;
-    let cacheCreationTokens = 0;
-    if (openaiResponse.usage.prompt_tokens_details) {
-        const details = openaiResponse.usage.prompt_tokens_details;
-        if (typeof details.cached_tokens === 'number') {
-            cacheReadTokens = details.cached_tokens;
-        }
-        if (typeof details.cache_creation_tokens === 'number') {
-            cacheCreationTokens = details.cache_creation_tokens;
-        }
-    }
+    const inputTokens = openaiResponse.usage.prompt_tokens;
+    const {
+        cacheReadTokens,
+        cacheCreationTokens,
+        cacheCreation,
+        cacheType,
+    } = extractPromptCacheDetails(openaiResponse.usage.prompt_tokens_details);
     const usage: any = {
         input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
         output_tokens: openaiResponse.usage.completion_tokens,
         cache_read_input_tokens: cacheReadTokens,
         cache_creation_input_tokens: cacheCreationTokens,
     };
+    if (cacheCreation !== undefined) {
+        usage.cache_creation = cacheCreation;
+    }
+    // cache_type absent => do not output.
+    if (cacheType !== undefined) {
+        usage.cache_type = cacheType;
+    }
 
     return {
         id: messageId,
@@ -850,6 +892,8 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
     let outputTokens = 0;
     let cacheReadTokens = 0;
     let cacheCreationTokens = 0;
+    let cacheCreation: any = undefined;
+    let cacheType: string | undefined = undefined;
     let lastDelta: any = null; // Track last delta to detect transitions
     let lastFinishReasonFromChunks: string | null = null;
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
@@ -977,6 +1021,12 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     cache_read_input_tokens: cacheReadTokens,
                     cache_creation_input_tokens: cacheCreationTokens,
                 };
+                if (cacheCreation !== undefined) {
+                    usageData.cache_creation = cacheCreation;
+                }
+                if (cacheType !== undefined) {
+                    usageData.cache_type = cacheType;
+                }
 
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
@@ -1017,11 +1067,15 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     }
                     // Handle cache-related token details
                     if (prompt_tokens_details) {
-                        if (typeof prompt_tokens_details.cached_tokens === 'number') {
-                            cacheReadTokens = Math.max(cacheReadTokens, prompt_tokens_details.cached_tokens);
+                        const details = extractPromptCacheDetails(prompt_tokens_details);
+                        cacheReadTokens = Math.max(cacheReadTokens, details.cacheReadTokens);
+                        cacheCreationTokens = Math.max(cacheCreationTokens, details.cacheCreationTokens);
+                        if (details.cacheCreation !== undefined) {
+                            cacheCreation = details.cacheCreation;
                         }
-                        if (typeof prompt_tokens_details.cache_creation_tokens === 'number') {
-                            cacheCreationTokens = Math.max(cacheCreationTokens, prompt_tokens_details.cache_creation_tokens);
+                        // cache_type absent => do not output.
+                        if (details.cacheType !== undefined) {
+                            cacheType = details.cacheType;
                         }
                     }
                     // Log each time usage appears in the stream
