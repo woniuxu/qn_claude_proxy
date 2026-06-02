@@ -1,3 +1,4 @@
+"use strict";
 /**
  * Claude-to-OpenAI API Proxy for Node.js
  *
@@ -12,174 +13,26 @@
  * - Supports streaming responses (Server-Sent Events).
  * - Designed for easy deployment on any Node.js hosting platform.
  */
-
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.convertImageBlockToOpenAI = convertImageBlockToOpenAI;
+exports.convertClaudeToOpenAIRequest = convertClaudeToOpenAIRequest;
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const dotenv_1 = __importDefault(require("dotenv"));
 // import { appendFile } from 'fs/promises';
 // import { join } from 'path';
-
 // 加载环境变量
-dotenv.config();
-
-// --- TYPE DEFINITIONS ---
-
-/**
- * Environment variables configured in your .env file.
- */
-export interface Env {
-    /**
-     * Pre-configured route for a "haiku" model for easier access.
-     */
-    OPENAI_BASE_URL: string;
-    OPENAI_API_KEY?: string;
-    PORT: string;
-}
-
-// --- Claude API Types ---
-
-interface ClaudeTool {
-    name: string;
-    description?: string;
-    input_schema: any;
-}
-
-// 扩展 Claude 文本块，支持 cache_control 之类的附加控制字段
-export interface ClaudeTextBlock {
-    type: "text" | "image" | "document" | "tool_use" | "tool_result" | "thinking";
-    text?: string;
-    thinking?: string;
-    signature?: string;
-    source?: {
-        type: "base64";
-        media_type: string;
-        data: string;
-    } | {
-        type: "url";
-        url: string;
-    };
-    id?: string;
-    name?: string;
-    input?: any;
-    tool_use_id?: string;
-    content?: any;
-    // 透传 Anthropic 的 cache_control 字段（例如 { type: "ephemeral" }）
-    cache_control?: any;
-}
-
-type ClaudeContent =
-    | string
-    | ClaudeTextBlock[];
-
-interface ClaudeMessage {
-    role: "user" | "assistant";
-    content: ClaudeContent;
-}
-
-// Claude 结构化输出配置类型
-interface ClaudeOutputConfig {
-    effort?: "low" | "medium" | "high" | "xhigh" | "max";
-    format?: {
-        type: "json_schema";
-        schema: { [key: string]: any };
-    } | null;
-}
-
-export interface ClaudeMessagesRequest {
-    model: string;
-    messages: ClaudeMessage[];
-    system?: string;
-    max_tokens: number;
-    stop_sequences?: string[];
-    stream?: boolean;
-    temperature?: number;
-    top_p?: number;
-    top_k?: number;
-    tools?: ClaudeTool[];
-    tool_choice?: { type: "auto" | "any" | "none" | "tool"; name?: string };
-    thinking?: {
-        type: "enabled" | "disabled" | "adaptive";
-        budget_tokens?: number;
-        display?: "summarized";
-    };
-    output_config?: ClaudeOutputConfig;
-}
-
-// --- OpenAI API Types ---
-
-// 扩展 OpenAI 文本块类型，允许附带 cache_control 等控制字段透传
-export interface OpenAIContentBlock {
-    type: "text" | "image_url" | "thinking" | "file";
-    text?: string;
-    image_url?: { url: string };
-    thinking?: string;
-    signature?: string;
-    file?: { file_id?: string; file_data?: string };
-    // 透传 Anthropic 的 cache_control 字段
-    cache_control?: any;
-}
-
-export interface OpenAIMessage {
-    role: "system" | "user" | "assistant" | "tool";
-    content: string | OpenAIContentBlock[];
-    tool_calls?: OpenAIToolCall[];
-    tool_call_id?: string;
-    reasoning_content?: string;
-    thinking_blocks?: Array<{ type: "thinking"; thinking: string; signature?: string }>;
-    // 透传整个 message 级别的 cache_control（例如 tool_result 场景）
-    cache_control?: any;
-}
-
-interface OpenAIToolCall {
-    id: string;
-    type: "function";
-    function: {
-        name: string;
-        arguments: string;
-    };
-    // 透传来自 Claude tool_use block 的 cache_control
-    cache_control?: any;
-}
-
-interface OpenAIRequest {
-    model: string;
-    messages: OpenAIMessage[];
-    max_tokens?: number;
-    temperature?: number;
-    top_p?: number;
-    stop?: string[];
-    stream?: boolean;
-    tools?: Array<{ type: "function"; function: any }>;
-    tool_choice?: "auto" | "required" | "none" | { type: "function"; function: { name: string } };
-    stream_options?: { include_usage: boolean };
-    thinking?: {
-        type: "enabled" | "disabled" | "adaptive";
-        budget_tokens?: number;
-        display?: "summarized";
-    };
-    // OpenAI 结构化输出 response_format
-    response_format?: {
-        type: "text" | "json_object" | "json_schema";
-        json_schema?: {
-            name: string;
-            schema: { [key: string]: any };
-            strict?: boolean;
-        };
-    };
-    output_config?: {
-        effort?: "low" | "medium" | "high" | "xhigh" | "max";
-    };
-}
-
+dotenv_1.default.config();
 // --- Express App Setup ---
-
-const app = express();
+const app = (0, express_1.default)();
 const PORT = process.env.PORT || 8092;
 const DEBUG_STOP_REASON = process.env.DEBUG_STOP_REASON === '1';
 const DEBUG_UPSTREAM_IO = process.env.DEBUG_UPSTREAM_IO === '1';
-
-function sanitizeHeadersForLog(headers: Record<string, string>): Record<string, string> {
-    const sanitized: Record<string, string> = { ...headers };
+function sanitizeHeadersForLog(headers) {
+    const sanitized = { ...headers };
     if (sanitized.Authorization) {
         sanitized.Authorization = 'Bearer ***';
     }
@@ -188,113 +41,104 @@ function sanitizeHeadersForLog(headers: Record<string, string>): Record<string, 
     }
     return sanitized;
 }
-
-function stringifyForDebug(value: unknown): string {
+function stringifyForDebug(value) {
     try {
         return JSON.stringify(value, null, 2);
-    } catch (error) {
+    }
+    catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return `{"_debug_error":"failed_to_stringify","message":"${errorMessage}"}`;
     }
 }
-
 // 中间件
-app.use(cors());
-app.use(express.json({ limit: '100mb' }));
-
+app.use((0, cors_1.default)());
+app.use(express_1.default.json({ limit: '100mb' }));
 // 获取环境变量
-const env: Env = {
+const env = {
     OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || 'http://localhost:8094/v1',
     PORT: process.env.PORT || '8092',
     OPENAI_API_KEY: process.env.OPENAI_API_KEY
 };
-
 // --- Main Route Handler ---
-
 app.all('/v1/messages', async (req, res) => {
     if (req.method === "OPTIONS") {
         return handleOptions(res);
     }
-
     if (req.method !== "POST") {
         return res.status(405).json({ error: "Method Not Allowed" });
     }
-
-    const authHeader = (req.headers['authorization'] || req.headers['Authorization']) as string | undefined;
+    const authHeader = (req.headers['authorization'] || req.headers['Authorization']);
     const bearerMatch = authHeader && authHeader.match(/^Bearer\s+(.+)$/i);
-    const apiKey = (bearerMatch && bearerMatch[1]) || (req.headers['x-api-key'] as string);
+    const apiKey = (bearerMatch && bearerMatch[1]) || req.headers['x-api-key'];
     if (!apiKey) {
         return res.status(401).json({ error: 'Missing API key. Provide Authorization: Bearer <key> or x-api-key header.' });
     }
-
     try {
-        const claudeRequest: ClaudeMessagesRequest = req.body;
-
+        const claudeRequest = req.body;
         // --- Configuration Selection ---
         let targetApiKey = apiKey;
-        let targetModelName: string;
-        let targetBaseUrl: string;
-
+        let targetModelName;
+        let targetBaseUrl;
         // 设成本地chat的完整base_url，如http://localhost:8094/v1
         targetBaseUrl = env.OPENAI_BASE_URL;
         targetModelName = claudeRequest.model;
-
         const target = {
             modelName: targetModelName,
             baseUrl: targetBaseUrl,
             apiKey: targetApiKey,
         };
-
         const openaiRequest = convertClaudeToOpenAIRequest(claudeRequest, target.modelName);
         // console.log(`openaiRequest: ${JSON.stringify(openaiRequest)}`);
         // console.log(`target.baseUrl: ${target.baseUrl}`);
         // console.log(`target.apiKey: ${target.apiKey}`);
         // 组装上游请求 headers，透传 User-Agent/Referer，并将真实 IP 追加到 User-Agent 做记录
-        const upstreamHeaders: Record<string, string> = {
+        const upstreamHeaders = {
             "Content-Type": "application/json",
             Authorization: `Bearer ${target.apiKey}`,
             "X-Qiniu-Source": "anthropic",
         };
-        let realIp: string | undefined;
-        const realIpHeader = req.headers['x-real-ip'] as string | string[] | undefined;
+        let realIp;
+        const realIpHeader = req.headers['x-real-ip'];
         if (realIpHeader) {
             realIp = Array.isArray(realIpHeader) ? realIpHeader[0]?.trim() : realIpHeader?.trim();
         }
         if (!realIp) {
-            const forwardedFor = req.headers['x-forwarded-for'] as string | string[] | undefined;
+            const forwardedFor = req.headers['x-forwarded-for'];
             const forwarded = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
-            if (forwarded) realIp = forwarded.split(',')[0].trim();
+            if (forwarded)
+                realIp = forwarded.split(',')[0].trim();
         }
-        if (!realIp && req.socket?.remoteAddress) realIp = req.socket.remoteAddress;
-        if (!realIp && req.ip) realIp = req.ip;
-
+        if (!realIp && req.socket?.remoteAddress)
+            realIp = req.socket.remoteAddress;
+        if (!realIp && req.ip)
+            realIp = req.ip;
         if (realIp) {
             upstreamHeaders['X-Real-IP'] = realIp;
         }
-
-        const userAgentHeader = req.headers['user-agent'] as string | string[] | undefined;
+        const userAgentHeader = req.headers['user-agent'];
         const baseUserAgent = userAgentHeader ? (Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader) : '';
         upstreamHeaders['User-Agent'] = realIp ? `${baseUserAgent} [X-Real-IP: ${realIp}]`.trim() : (baseUserAgent || '');
-        const refererHeader = req.headers['referer'] as string | string[] | undefined;
+        const refererHeader = req.headers['referer'];
         if (refererHeader) {
             upstreamHeaders['Referer'] = Array.isArray(refererHeader) ? refererHeader[0] : refererHeader;
         }
-
         // 透传用户请求的其他 header 到上游（不覆盖已设置的）
         const skipKeys = new Set(['host', 'content-length', 'content-type', 'authorization', 'connection']);
         const passthroughPrefixes = ['x-'];
         const passthroughNames = ['accept', 'accept-language', 'accept-encoding'];
         for (const [key, value] of Object.entries(req.headers)) {
-            if (value === undefined) continue;
+            if (value === undefined)
+                continue;
             const lower = key.toLowerCase();
-            if (skipKeys.has(lower)) continue;
-            if (upstreamHeaders[lower] !== undefined) continue;
+            if (skipKeys.has(lower))
+                continue;
+            if (upstreamHeaders[lower] !== undefined)
+                continue;
             const valueStr = Array.isArray(value) ? value[0] : value;
             if (passthroughNames.includes(lower) || passthroughPrefixes.some(p => lower.startsWith(p))) {
                 upstreamHeaders[key] = valueStr;
             }
         }
-
         if (DEBUG_UPSTREAM_IO) {
             const debugRequestLog = {
                 url: `${target.baseUrl}/chat/completions`,
@@ -304,7 +148,6 @@ app.all('/v1/messages', async (req, res) => {
             };
             console.log(`[upstream][request] ${stringifyForDebug(debugRequestLog)}`);
         }
-
         // 临时调试：打印发往上游的请求 body 和 headers（注意包含完整对话内容）
         // 已暂时关闭，如需再次启用，取消以下代码注释即可
         // const debugLogPath = join(process.cwd(), 'debug_upstream_request.jsonl');
@@ -316,46 +159,38 @@ app.all('/v1/messages', async (req, res) => {
         // appendFile(debugLogPath, JSON.stringify(logEntry) + '\n').catch(err => {
         //     console.error('[DEBUG] Failed to write debug log:', err);
         // });
-
         const openaiApiResponse = await fetch(`${target.baseUrl}/chat/completions`, {
             method: "POST",
             headers: upstreamHeaders,
             body: JSON.stringify(openaiRequest),
         });
-
         if (!openaiApiResponse.ok) {
             const errorBody = await openaiApiResponse.text();
             return res.status(openaiApiResponse.status).json(JSON.parse(errorBody));
         }
-
         // 透传 http_x_reqid header
         const reqIdHeader = openaiApiResponse.headers.get('http_x_reqid');
         if (reqIdHeader) {
             res.setHeader('http_x_reqid', reqIdHeader);
         }
-
         if (claudeRequest.stream) {
             const transformStream = new TransformStream({
                 transform: streamTransformer(claudeRequest.model, DEBUG_UPSTREAM_IO),
             });
-
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('X-Accel-Buffering', 'no');
             res.setHeader('Connection', 'keep-alive');
-
             // 将 OpenAI 响应流通过转换流传递给客户端
             if (openaiApiResponse.body) {
-                openaiApiResponse.body.pipeThrough(transformStream).pipeTo(
-                    new WritableStream({
-                        write(chunk) {
-                            res.write(chunk);
-                        },
-                        close() {
-                            res.end();
-                        }
-                    })
-                ).catch((err: any) => {
+                openaiApiResponse.body.pipeThrough(transformStream).pipeTo(new WritableStream({
+                    write(chunk) {
+                        res.write(chunk);
+                    },
+                    close() {
+                        res.end();
+                    }
+                })).catch((err) => {
                     // 上游连接中断（如 BodyTimeoutError）时，pipeTo 的 Promise 会 reject。
                     // 若不捕获，会变成 unhandledRejection 导致 Node.js 进程崩溃。
                     console.error('[stream] upstream pipe error:', err?.message || err);
@@ -364,7 +199,8 @@ app.all('/v1/messages', async (req, res) => {
                     }
                 });
             }
-        } else {
+        }
+        else {
             const openaiResponse = await openaiApiResponse.json();
             if (DEBUG_UPSTREAM_IO) {
                 console.log(`[upstream][response][non-stream] ${stringifyForDebug(openaiResponse)}`);
@@ -372,48 +208,42 @@ app.all('/v1/messages', async (req, res) => {
             const claudeResponse = convertOpenAIToClaudeResponse(openaiResponse, claudeRequest.model);
             return res.json(claudeResponse);
         }
-    } catch (e: any) {
+    }
+    catch (e) {
         console.error('Error processing request:', e);
         return res.status(500).json({ error: e.message });
     }
 });
-
 // 健康检查端点
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
-
 // 全局兜底：捕获所有未处理的 Promise rejection，防止进程崩溃
-process.on('unhandledRejection', (reason: any, promise) => {
+process.on('unhandledRejection', (reason, promise) => {
     console.error('[unhandledRejection] Unhandled promise rejection:', reason?.message || reason);
     // 仅记录日志，不退出进程，保持服务可用
 });
-
 // 启动服务器
 app.listen(PORT, () => {
     console.log(`Claude Proxy server is running on port ${PORT}`);
     console.log(`Health check: http://localhost:${PORT}/health`);
     console.log(`API endpoint: http://localhost:${PORT}/v1/messages`);
 });
-
 // ======================= Helper Functions =======================
-
 /**
  * Recursively cleans a JSON Schema to make it compatible with target APIs like Google Gemini.
  * - Removes '$schema' and 'additionalProperties' keys.
  * - For properties of type 'string', removes the 'format' field unless it's 'date-time' or 'enum'.
  * @param schema The schema object to clean.
  */
-function recursivelyCleanSchema(schema: any): any {
+function recursivelyCleanSchema(schema) {
     if (schema === null || typeof schema !== 'object') {
         return schema;
     }
-
     if (Array.isArray(schema)) {
         return schema.map(item => recursivelyCleanSchema(item));
     }
-
-    const newSchema: { [key: string]: any } = {};
+    const newSchema = {};
     for (const key in schema) {
         if (Object.prototype.hasOwnProperty.call(schema, key)) {
             if (key === '$schema' || key === 'additionalProperties') {
@@ -422,29 +252,27 @@ function recursivelyCleanSchema(schema: any): any {
             newSchema[key] = recursivelyCleanSchema(schema[key]);
         }
     }
-
     if (newSchema.type === 'string' && newSchema.format) {
         const supportedFormats = ['date-time', 'enum'];
         if (!supportedFormats.includes(newSchema.format)) {
             delete newSchema.format;
         }
     }
-
     return newSchema;
 }
-
 /**
  * 将 Claude 图片块转换为 OpenAI image_url 格式
  */
-export function convertImageBlockToOpenAI(block: ClaudeTextBlock): OpenAIContentBlock {
-    let imageUrl: string;
-    if (block.source!.type === 'url') {
-        imageUrl = (block.source as { type: "url"; url: string }).url;
-    } else {
-        const src = block.source as { type: "base64"; media_type: string; data: string };
+function convertImageBlockToOpenAI(block) {
+    let imageUrl;
+    if (block.source.type === 'url') {
+        imageUrl = block.source.url;
+    }
+    else {
+        const src = block.source;
         imageUrl = `data:${src.media_type};base64,${src.data}`;
     }
-    const base: OpenAIContentBlock = {
+    const base = {
         type: 'image_url',
         image_url: { url: imageUrl },
     };
@@ -453,9 +281,9 @@ export function convertImageBlockToOpenAI(block: ClaudeTextBlock): OpenAIContent
     }
     return base;
 }
-
-function extractCacheCreationTokens(details: any): number {
-    if (!details || typeof details !== 'object') return 0;
+function extractCacheCreationTokens(details) {
+    if (!details || typeof details !== 'object')
+        return 0;
     if (typeof details.cache_creation_input_tokens === 'number') {
         return details.cache_creation_input_tokens;
     }
@@ -465,23 +293,16 @@ function extractCacheCreationTokens(details: any): number {
     }
     if (details.cache_creation && typeof details.cache_creation === 'object') {
         // Qwen may only provide per-cache-type token counts in cache_creation.
-        return Object.values(details.cache_creation).reduce((sum: number, value: any) => {
+        return Object.values(details.cache_creation).reduce((sum, value) => {
             return typeof value === 'number' ? sum + value : sum;
         }, 0);
     }
     return 0;
 }
-
-function extractPromptCacheDetails(promptTokensDetails: any): {
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    cacheCreation?: any;
-    cacheType?: string;
-} {
+function extractPromptCacheDetails(promptTokensDetails) {
     if (!promptTokensDetails || typeof promptTokensDetails !== 'object') {
         return { cacheReadTokens: 0, cacheCreationTokens: 0 };
     }
-
     const cacheReadTokens = typeof promptTokensDetails.cached_tokens === 'number' ? promptTokensDetails.cached_tokens : 0;
     const cacheCreationTokens = extractCacheCreationTokens(promptTokensDetails);
     const cacheCreation = (promptTokensDetails.cache_creation && typeof promptTokensDetails.cache_creation === 'object')
@@ -490,81 +311,74 @@ function extractPromptCacheDetails(promptTokensDetails: any): {
     const cacheType = (typeof promptTokensDetails.cache_type === 'string' && promptTokensDetails.cache_type)
         ? promptTokensDetails.cache_type
         : undefined;
-
     return { cacheReadTokens, cacheCreationTokens, cacheCreation, cacheType };
 }
-
-function buildAnthropicCacheCreation(cacheCreation?: any): any {
+function buildAnthropicCacheCreation(cacheCreation) {
     return {
         ephemeral_5m_input_tokens: 0,
         ephemeral_1h_input_tokens: 0,
         ...(cacheCreation && typeof cacheCreation === 'object' ? cacheCreation : {}),
     };
 }
-
 /**
  * Converts a Claude API request to the OpenAI format.
  */
-export function convertClaudeToOpenAIRequest(
-    claudeRequest: ClaudeMessagesRequest,
-    modelName: string
-): OpenAIRequest {
-    const openaiMessages: OpenAIMessage[] = [];
-
+function convertClaudeToOpenAIRequest(claudeRequest, modelName) {
+    const openaiMessages = [];
     if (claudeRequest.system) {
         openaiMessages.push({ role: "system", content: claudeRequest.system });
     }
-
     for (let i = 0; i < claudeRequest.messages.length; i++) {
         const message = claudeRequest.messages[i];
         if (message.role === 'user') {
             if (Array.isArray(message.content)) {
                 const toolResults = message.content.filter(c => c.type === 'tool_result');
                 const otherContent = message.content.filter(c => c.type !== 'tool_result');
-
                 if (toolResults.length > 0) {
                     toolResults.forEach(block => {
-                        let toolContentStr: string;
-                        const imageContentBlocks: OpenAIContentBlock[] = [];
-
+                        let toolContentStr;
+                        const imageContentBlocks = [];
                         if (typeof block.content === 'string') {
                             // 简单字符串内容，直接使用
                             toolContentStr = block.content;
-                        } else if (Array.isArray(block.content)) {
+                        }
+                        else if (Array.isArray(block.content)) {
                             // 数组内容：分离图片块和非图片块
-                            const nonImageParts: any[] = [];
+                            const nonImageParts = [];
                             for (const item of block.content) {
                                 if (item.type === 'image' && item.source) {
                                     // 图片块：转换为 OpenAI image_url 格式，稍后放入 user 消息
                                     imageContentBlocks.push(convertImageBlockToOpenAI(item));
-                                } else {
+                                }
+                                else {
                                     nonImageParts.push(item);
                                 }
                             }
                             // 非图片部分：如果只有一个文本块，提取其 text；否则 JSON.stringify
                             if (nonImageParts.length === 1 && nonImageParts[0].type === 'text' && nonImageParts[0].text) {
                                 toolContentStr = nonImageParts[0].text;
-                            } else if (nonImageParts.length > 0) {
+                            }
+                            else if (nonImageParts.length > 0) {
                                 toolContentStr = JSON.stringify(nonImageParts);
-                            } else {
+                            }
+                            else {
                                 // 内容全是图片，tool 消息放一个占位文本
                                 toolContentStr = '[image]';
                             }
-                        } else {
+                        }
+                        else {
                             toolContentStr = JSON.stringify(block.content);
                         }
-
-                        const toolMessage: OpenAIMessage = {
+                        const toolMessage = {
                             role: 'tool',
-                            tool_call_id: block.tool_use_id!,
+                            tool_call_id: block.tool_use_id,
                             content: toolContentStr,
                         };
                         // 透传 tool_result block 上的 cache_control
-                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
-                            toolMessage.cache_control = (block as ClaudeTextBlock).cache_control;
+                        if (block.cache_control !== undefined) {
+                            toolMessage.cache_control = block.cache_control;
                         }
                         openaiMessages.push(toolMessage);
-
                         // 如果有图片块，创建一个紧跟在 tool 消息后面的 user 消息
                         if (imageContentBlocks.length > 0) {
                             openaiMessages.push({
@@ -574,12 +388,11 @@ export function convertClaudeToOpenAIRequest(
                         }
                     });
                 }
-
                 if (otherContent.length > 0) {
-                    const mappedContent: OpenAIContentBlock[] = otherContent.map((block) => {
+                    const mappedContent = otherContent.map((block) => {
                         // 文本块：透传 cache_control 等附加字段
                         if (block.type === 'text') {
-                            const base: OpenAIContentBlock = {
+                            const base = {
                                 type: 'text',
                                 text: block.text,
                             };
@@ -588,24 +401,23 @@ export function convertClaudeToOpenAIRequest(
                             }
                             return base;
                         }
-
                         // 图片块：支持 base64 和 url 两种来源，透传 cache_control
                         if (block.type === 'image' && block.source) {
                             return convertImageBlockToOpenAI(block);
                         }
-
                         // 文档块：将 Claude document 格式转换为 OpenAI file 格式
                         // base64 来源使用 file_data，URL 来源使用 file_id
                         if (block.type === 'document' && block.source) {
-                            let file: { file_id?: string; file_data?: string };
+                            let file;
                             if (block.source.type === 'url') {
-                                file = { file_id: (block.source as { type: "url"; url: string }).url };
-                            } else {
+                                file = { file_id: block.source.url };
+                            }
+                            else {
                                 // base64 来源：构造 data URL 放入 file_data
-                                const src = block.source as { type: "base64"; media_type: string; data: string };
+                                const src = block.source;
                                 file = { file_data: `data:${src.media_type};base64,${src.data}` };
                             }
-                            const base: OpenAIContentBlock = {
+                            const base = {
                                 type: 'file',
                                 file,
                             };
@@ -614,20 +426,20 @@ export function convertClaudeToOpenAIRequest(
                             }
                             return base;
                         }
-
                         // 其他类型（如 thinking/tool_use 等）目前按原样透传，防止误删字段
-                        return block as any;
+                        return block;
                     });
-
                     openaiMessages.push({
                         role: "user",
                         content: mappedContent,
                     });
                 }
-            } else {
+            }
+            else {
                 openaiMessages.push({ role: "user", content: message.content });
             }
-        } else if (message.role === 'assistant') {
+        }
+        else if (message.role === 'assistant') {
             // assistant 消息既可能是字符串（旧格式），也可能是 content block 数组（推荐格式）
             // 如果是字符串，直接按文本透传，避免被误处理成空字符串
             if (!Array.isArray(message.content)) {
@@ -637,68 +449,68 @@ export function convertClaudeToOpenAIRequest(
                 });
                 continue;
             }
-
-            const contentBlocks: OpenAIContentBlock[] = [];
-            const toolCalls: OpenAIToolCall[] = [];
+            const contentBlocks = [];
+            const toolCalls = [];
             if (Array.isArray(message.content)) {
                 message.content.forEach(block => {
                     if (block.type === 'text') {
-                        const textBlock: OpenAIContentBlock = {
+                        const textBlock = {
                             type: 'text',
                             text: block.text || '',
                         };
-                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
-                            textBlock.cache_control = (block as ClaudeTextBlock).cache_control;
+                        if (block.cache_control !== undefined) {
+                            textBlock.cache_control = block.cache_control;
                         }
                         contentBlocks.push(textBlock);
-                    } else if (block.type === 'thinking') {
+                    }
+                    else if (block.type === 'thinking') {
                         // Preserve thinking blocks in OpenAI format with signature，并透传 cache_control
-                        const thinkingBlock: OpenAIContentBlock = {
+                        const thinkingBlock = {
                             type: 'thinking',
                             thinking: block.thinking || block.text || ''
                         };
                         if (block.signature) {
                             thinkingBlock.signature = block.signature;
                         }
-                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
-                            thinkingBlock.cache_control = (block as ClaudeTextBlock).cache_control;
+                        if (block.cache_control !== undefined) {
+                            thinkingBlock.cache_control = block.cache_control;
                         }
                         contentBlocks.push(thinkingBlock);
-                    } else if (block.type === 'tool_use') {
-                        const toolCall: OpenAIToolCall = {
-                            id: block.id!,
+                    }
+                    else if (block.type === 'tool_use') {
+                        const toolCall = {
+                            id: block.id,
                             type: 'function',
-                            function: { name: block.name!, arguments: JSON.stringify(block.input || {}) },
+                            function: { name: block.name, arguments: JSON.stringify(block.input || {}) },
                         };
                         // 透传 tool_use block 上的 cache_control
-                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
-                            toolCall.cache_control = (block as ClaudeTextBlock).cache_control;
+                        if (block.cache_control !== undefined) {
+                            toolCall.cache_control = block.cache_control;
                         }
                         toolCalls.push(toolCall);
                     }
                 });
             }
-
             // If we have structured content blocks (thinking or multiple text blocks), use array format
             // Otherwise, use simple string format for backward compatibility
-            let content: string | OpenAIContentBlock[];
+            let content;
             if (contentBlocks.length === 0) {
                 content = '';
-            } else if (contentBlocks.length === 1 && contentBlocks[0].type === 'text') {
+            }
+            else if (contentBlocks.length === 1 && contentBlocks[0].type === 'text') {
                 content = contentBlocks[0].text || '';
-            } else {
+            }
+            else {
                 content = contentBlocks;
             }
-
-            const assistantMessage: OpenAIMessage = { role: 'assistant', content };
+            const assistantMessage = { role: 'assistant', content };
             if (toolCalls.length > 0) {
                 assistantMessage.tool_calls = toolCalls;
             }
             openaiMessages.push(assistantMessage);
         }
     }
-
-    const openaiRequest: OpenAIRequest = {
+    const openaiRequest = {
         model: modelName,
         messages: openaiMessages,
         max_tokens: claudeRequest.max_tokens,
@@ -707,12 +519,10 @@ export function convertClaudeToOpenAIRequest(
         stream: claudeRequest.stream,
         stop: claudeRequest.stop_sequences,
     };
-
     // Pass through thinking parameter if present
     if (claudeRequest.thinking) {
         openaiRequest.thinking = claudeRequest.thinking;
     }
-
     // 将 Claude output_config.format 转换为 OpenAI response_format
     if (claudeRequest.output_config?.format) {
         const format = claudeRequest.output_config.format;
@@ -720,14 +530,13 @@ export function convertClaudeToOpenAIRequest(
             openaiRequest.response_format = {
                 type: 'json_schema',
                 json_schema: {
-                    name: 'json_output',  // Claude 没有 name 字段，OpenAI 要求必填，使用默认值
+                    name: 'json_output', // Claude 没有 name 字段，OpenAI 要求必填，使用默认值
                     schema: format.schema, // 直接透传 schema，不做清理（strict 模式需要 additionalProperties）
                     strict: true,
                 },
             };
         }
     }
-
     // 透传 Claude output_config.effort 到上游（用于推理强度控制）
     if (claudeRequest.output_config?.effort) {
         openaiRequest.output_config = {
@@ -735,7 +544,6 @@ export function convertClaudeToOpenAIRequest(
             effort: claudeRequest.output_config.effort,
         };
     }
-
     if (claudeRequest.tools) {
         openaiRequest.tools = claudeRequest.tools.map((tool) => {
             const cleanedParameters = recursivelyCleanSchema(tool.input_schema);
@@ -749,53 +557,53 @@ export function convertClaudeToOpenAIRequest(
             };
         });
     }
-
     if (claudeRequest.tool_choice) {
         if (claudeRequest.tool_choice.type === 'auto') {
             openaiRequest.tool_choice = 'auto';
-        } else if (claudeRequest.tool_choice.type === 'any') {
+        }
+        else if (claudeRequest.tool_choice.type === 'any') {
             openaiRequest.tool_choice = 'required';
-        } else if (claudeRequest.tool_choice.type === 'none') {
+        }
+        else if (claudeRequest.tool_choice.type === 'none') {
             openaiRequest.tool_choice = 'none';
-        } else if (claudeRequest.tool_choice.type === 'tool') {
-            openaiRequest.tool_choice = { type: 'function', function: { name: claudeRequest.tool_choice.name! }};
+        }
+        else if (claudeRequest.tool_choice.type === 'tool') {
+            openaiRequest.tool_choice = { type: 'function', function: { name: claudeRequest.tool_choice.name } };
         }
     }
-
     // Ensure usage is included in streaming responses when supported by the upstream API
     if (claudeRequest.stream) {
         openaiRequest.stream_options = { include_usage: true };
     }
-
     return openaiRequest;
 }
-
 /**
  * Converts a non-streaming OpenAI response to the Claude format.
  */
-function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any {
-    const mapOpenAIIdToClaude = (openaiId: string): string => {
-        if (!openaiId || typeof openaiId !== 'string') return `msg_${Math.random().toString(36).substr(2, 9)}`;
+function convertOpenAIToClaudeResponse(openaiResponse, model) {
+    const mapOpenAIIdToClaude = (openaiId) => {
+        if (!openaiId || typeof openaiId !== 'string')
+            return `msg_${Math.random().toString(36).substr(2, 9)}`;
         const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
         const suffix = match ? match[1] : openaiId;
         return `msg_${suffix}`;
     };
     // 提取 id 的后缀部分（去掉前缀），用于签名
-    const extractIdSuffix = (id: string): string => {
-        if (!id || typeof id !== 'string') return '';
+    const extractIdSuffix = (id) => {
+        if (!id || typeof id !== 'string')
+            return '';
         const match = id.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
         return match ? match[1] : id;
     };
     const choice = openaiResponse.choices[0];
-    const contentBlocks: any[] = [];
+    const contentBlocks = [];
     const messageId = mapOpenAIIdToClaude(openaiResponse.id);
     const originalId = openaiResponse.id; // 原始的 OpenAI id，用于签名
-
     // Handle thinking blocks first (they should appear before text content in Claude format)
     // 如果 thinking_blocks 存在，优先使用 thinking_blocks
     if (choice.message.thinking_blocks && choice.message.thinking_blocks.length > 0) {
-        choice.message.thinking_blocks.forEach((block: { type: string; thinking: string; signature?: string }) => {
-            const thinkingBlock: { type: 'thinking'; thinking: string; signature?: string } = {
+        choice.message.thinking_blocks.forEach((block) => {
+            const thinkingBlock = {
                 type: 'thinking',
                 thinking: block.thinking,
             };
@@ -805,21 +613,21 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
             }
             contentBlocks.push(thinkingBlock);
         });
-    } else if (choice.message.reasoning_content) {
+    }
+    else if (choice.message.reasoning_content) {
         // thinking_blocks 不存在时，使用 reasoning_content，签名使用 id 后缀（去掉前缀）
-        const thinkingBlock: { type: 'thinking'; thinking: string; signature: string } = {
+        const thinkingBlock = {
             type: 'thinking',
             thinking: choice.message.reasoning_content,
             signature: extractIdSuffix(originalId), // 签名使用 id 后缀（去掉前缀）
         };
         contentBlocks.push(thinkingBlock);
     }
-
     if (choice.message.content) {
         contentBlocks.push({ type: 'text', text: choice.message.content });
     }
     if (choice.message.tool_calls) {
-        choice.message.tool_calls.forEach((call: OpenAIToolCall) => {
+        choice.message.tool_calls.forEach((call) => {
             contentBlocks.push({
                 type: 'tool_use',
                 id: call.id,
@@ -828,20 +636,14 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
             });
         });
     }
-    const stopReasonMap: Record<string, string> = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use" };
+    const stopReasonMap = { stop: "end_turn", length: "max_tokens", tool_calls: "tool_use" };
     console.log(`messageId: ${messageId}`);
-
     // Build usage object with cache details if available
     // Anthropic: total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens
     // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
     const inputTokens = openaiResponse.usage.prompt_tokens;
-    const {
-        cacheReadTokens,
-        cacheCreationTokens,
-        cacheCreation,
-        cacheType,
-    } = extractPromptCacheDetails(openaiResponse.usage.prompt_tokens_details);
-    const usage: any = {
+    const { cacheReadTokens, cacheCreationTokens, cacheCreation, cacheType, } = extractPromptCacheDetails(openaiResponse.usage.prompt_tokens_details);
+    const usage = {
         input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
         output_tokens: openaiResponse.usage.completion_tokens,
         cache_read_input_tokens: cacheReadTokens,
@@ -852,7 +654,6 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     if (cacheType !== undefined) {
         usage.cache_type = cacheType;
     }
-
     return {
         id: messageId,
         type: "message",
@@ -863,30 +664,31 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         usage: usage,
     };
 }
-
 /**
  * Creates a transform function for the streaming response.
  * Handles OpenAI streaming format including thinking_blocks and converts to Claude SSE format.
  */
-function streamTransformer(model: string, debugUpstreamIo = false) {
-    const mapOpenAIIdToClaude = (openaiId: string): string => {
-        if (!openaiId || typeof openaiId !== 'string') return `msg_${Math.random().toString(36).substr(2, 9)}`;
+function streamTransformer(model, debugUpstreamIo = false) {
+    const mapOpenAIIdToClaude = (openaiId) => {
+        if (!openaiId || typeof openaiId !== 'string')
+            return `msg_${Math.random().toString(36).substr(2, 9)}`;
         const match = openaiId.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
         const suffix = match ? match[1] : openaiId;
         return `msg_${suffix}`;
     };
     // 提取 id 的后缀部分（去掉前缀），用于 reasoning_content 的签名
-    const extractIdSuffix = (id: string | null): string => {
-        if (!id || typeof id !== 'string') return '';
+    const extractIdSuffix = (id) => {
+        if (!id || typeof id !== 'string')
+            return '';
         const match = id.match(/^[a-zA-Z]+-([A-Za-z0-9_\-]+)/);
         return match ? match[1] : id;
     };
     let initialized = false;
     let buffer = "";
-    let messageId: string | null = null;
-    let requestId: string | null = null; // Store original OpenAI request id for signature
-    const toolCalls: { [index: number]: { id: string, name: string, args: string, claudeIndex: number, started: boolean, stopped: boolean } } = {};
-    const thinkingBlocks: { [index: number]: { content: string, claudeIndex: number, started: boolean, stopped: boolean, signature?: string } } = {};
+    let messageId = null;
+    let requestId = null; // Store original OpenAI request id for signature
+    const toolCalls = {};
+    const thinkingBlocks = {};
     let contentBlockIndex = -1; // Start at -1, will be incremented to 0 for first block
     let textBlockStarted = false; // Track if text block has been started
     let textContent = '';
@@ -898,15 +700,15 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
     let outputTokens = 0;
     let cacheReadTokens = 0;
     let cacheCreationTokens = 0;
-    let cacheCreation: any = undefined;
-    let cacheType: string | undefined = undefined;
-    let lastDelta: any = null; // Track last delta to detect transitions
-    let lastFinishReasonFromChunks: string | null = null;
-    const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
+    let cacheCreation = undefined;
+    let cacheType = undefined;
+    let lastDelta = null; // Track last delta to detect transitions
+    let lastFinishReasonFromChunks = null;
+    const sendEvent = (controller, event, data) => {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
     };
-    return (chunk: Uint8Array, controller: TransformStreamDefaultController) => {
-        const stopThinkingBlock = (thinkingIndex: number) => {
+    return (chunk, controller) => {
+        const stopThinkingBlock = (thinkingIndex) => {
             const tb = thinkingBlocks[thinkingIndex];
             if (tb && tb.started && !tb.stopped) {
                 sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tb.claudeIndex });
@@ -919,7 +721,7 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 textBlockStarted = false;
             }
         };
-        const stopToolBlock = (toolIndex: number) => {
+        const stopToolBlock = (toolIndex) => {
             const tc = toolCalls[toolIndex];
             if (tc && tc.started && !tc.stopped) {
                 sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: tc.claudeIndex });
@@ -931,7 +733,8 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
         buffer = lines.pop() || "";
         // removed per-chunk reinitialization of inputTokens/outputTokens to preserve totals across chunks
         for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
+            if (!line.startsWith("data: "))
+                continue;
             if (debugUpstreamIo) {
                 console.log(`[upstream][response][stream-line] ${line}`);
             }
@@ -953,7 +756,6 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 Object.keys(thinkingBlocks).forEach(key => stopThinkingBlock(Number(key)));
                 stopTextBlock();
                 Object.keys(toolCalls).forEach(key => stopToolBlock(Number(key)));
-
                 let finalStopReason = "end_turn";
                 try {
                     if (DEBUG_STOP_REASON) {
@@ -966,23 +768,25 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                         const lastChunk = JSON.parse(lines[lines.length - 2].substring(6));
                         finishReason = lastChunk.choices[0].finish_reason;
                     }
-                    if (finishReason === 'tool_calls') finalStopReason = 'tool_use';
-                    if (finishReason === 'length') finalStopReason = 'max_tokens';
+                    if (finishReason === 'tool_calls')
+                        finalStopReason = 'tool_use';
+                    if (finishReason === 'length')
+                        finalStopReason = 'max_tokens';
                     if (DEBUG_STOP_REASON) {
                         console.log(`[stop_reason][DONE] parsed_finish_reason=${finishReason} final_stop_reason=${finalStopReason} messageId=${messageId}`);
                     }
-                } catch (error) {
+                }
+                catch (error) {
                     if (DEBUG_STOP_REASON) {
                         const errorMessage = error instanceof Error ? error.message : String(error);
                         console.log(`[stop_reason][DONE] parse_failed messageId=${messageId} error=${errorMessage} fallback_final_stop_reason=${finalStopReason} last_finish_reason_seen=${lastFinishReasonFromChunks}`);
                     }
                 }
-
                 // 构建完整的 Claude 响应内容
-                const claudeContent: any[] = [];
+                const claudeContent = [];
                 // Add reasoning_content as thinking block if present
                 if (reasoningContent) {
-                    const reasoningBlock: any = { type: 'thinking', thinking: reasoningContent };
+                    const reasoningBlock = { type: 'thinking', thinking: reasoningContent };
                     // reasoning_content 的签名使用 id 后缀（去掉前缀）
                     const signatureValue = extractIdSuffix(requestId || messageId);
                     if (signatureValue) {
@@ -992,8 +796,9 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 }
                 Object.values(thinkingBlocks).forEach(tb => {
                     if (tb.started && tb.content) {
-                        const block: any = { type: 'thinking', thinking: tb.content };
-                        if (tb.signature) block.signature = tb.signature;
+                        const block = { type: 'thinking', thinking: tb.content };
+                        if (tb.signature)
+                            block.signature = tb.signature;
                         claudeContent.push(block);
                     }
                 });
@@ -1002,10 +807,11 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 }
                 Object.values(toolCalls).forEach(tc => {
                     if (tc.started) {
-                        let input_tmp: object;
+                        let input_tmp;
                         try {
                             input_tmp = JSON.parse(tc.args || '{}');
-                        } catch {
+                        }
+                        catch {
                             input_tmp = { input_str: tc.args || '' };
                             console.log(`[tool_use] Invalid JSON in args, fallback to input_str. messageId=${messageId}, name=${tc.name}, args=${tc.args}`);
                         }
@@ -1013,15 +819,14 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                             type: 'tool_use',
                             id: tc.id,
                             name: tc.name,
-                            input:input_tmp
+                            input: input_tmp
                         });
                     }
                 });
-
                 // Build usage object with cache details
                 // Anthropic: total_input_tokens = cache_read_input_tokens + cache_creation_input_tokens + input_tokens
                 // OpenAI prompt_tokens = total, so input_tokens = prompt_tokens - cached - cache_creation
-                const usageData: any = {
+                const usageData = {
                     input_tokens: Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens),
                     output_tokens: outputTokens,
                     cache_read_input_tokens: cacheReadTokens,
@@ -1031,7 +836,6 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 if (cacheType !== undefined) {
                     usageData.cache_type = cacheType;
                 }
-
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
                 controller.terminate();
@@ -1047,20 +851,19 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     }
                 }
                 const delta = openaiChunk.choices[0]?.delta;
-
                 // 第一次解析：获取 id 或备用占位 id，并发送 message_start
                 if (!initialized) {
                     if (openaiChunk.id) {
                         requestId = openaiChunk.id; // Store original id for signature
                         messageId = mapOpenAIIdToClaude(openaiChunk.id);
-                    } else {
+                    }
+                    else {
                         messageId = `msg_${Math.random().toString(36).substr(2, 9)}`;
                     }
                     console.log(`messageId: ${messageId}`);
                     sendEvent(controller, 'message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } });
                     initialized = true;
                 }
-
                 if (openaiChunk.usage) {
                     const { prompt_tokens, completion_tokens, prompt_tokens_details } = openaiChunk.usage;
                     if (typeof prompt_tokens === 'number') {
@@ -1085,8 +888,8 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     // Log each time usage appears in the stream
                     // console.log('[stream usage]', { prompt_tokens, completion_tokens, inputTokens, outputTokens });
                 }
-                if (!delta) continue;
-
+                if (!delta)
+                    continue;
                 // Detect transitions between different content types
                 // If we're switching from thinking to text/tool_calls, stop thinking block
                 // 合并条件，避免重复调用 stopThinkingBlock
@@ -1103,7 +906,6 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 if (lastDelta?.content && delta.tool_calls && !delta.content) {
                     stopTextBlock();
                 }
-
                 // If we're switching from reasoning_content to thinking_blocks, stop reasoning_content block
                 // thinking_blocks 优先级高于 reasoning_content
                 if (lastDelta?.reasoning_content !== undefined && !delta.reasoning_content && delta.thinking_blocks && reasoningBlockStarted) {
@@ -1117,7 +919,6 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     sendEvent(controller, 'content_block_stop', { type: 'content_block_stop', index: contentBlockIndex });
                     reasoningBlockStarted = false;
                 }
-
                 // Handle reasoning_content transition - output signature when transitioning away from reasoning_content
                 // 只有当 thinking_blocks 不存在时才处理 reasoning_content
                 if (lastDelta?.reasoning_content !== undefined && delta.reasoning_content === undefined && reasoningBlockStarted && !delta.thinking_blocks) {
@@ -1135,13 +936,11 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     // 每结束一个块就递增 index
                     contentBlockIndex++;
                 }
-
                 lastDelta = delta;
-
                 // Handle thinking blocks first (they should come before text)
                 // thinking_blocks 优先级高于 reasoning_content
                 if (delta.thinking_blocks && delta.thinking_blocks.length > 0) {
-                    for(const thinking_delta of delta.thinking_blocks) {
+                    for (const thinking_delta of delta.thinking_blocks) {
                         const thinkingIndex = 0; // Usually there's only one thinking block
                         if (!thinkingBlocks[thinkingIndex]) {
                             thinkingBlocks[thinkingIndex] = { content: '', claudeIndex: 0, started: false, stopped: false };
@@ -1156,14 +955,15 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                                 // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                                 if (contentBlockIndex === -1) {
                                     contentBlockIndex = 0;
-                                } else {
+                                }
+                                else {
                                     contentBlockIndex++;
                                 }
                                 thinkingBlocks[thinkingIndex].claudeIndex = contentBlockIndex;
                                 thinkingBlocks[thinkingIndex].started = true;
                                 thinkingBlocks[thinkingIndex].stopped = false;
                                 // Include signature in content_block_start if available
-                                const contentBlock: any = { type: 'thinking', thinking: '' };
+                                const contentBlock = { type: 'thinking', thinking: '' };
                                 if (thinkingBlocks[thinkingIndex].signature) {
                                     contentBlock.signature = thinkingBlocks[thinkingIndex].signature;
                                 }
@@ -1181,7 +981,6 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                         }
                     }
                 }
-
                 // Handle reasoning_content (convert to thinking)
                 // 只有当 thinking_blocks 不存在时才处理 reasoning_content
                 if (delta.reasoning_content && !delta.thinking_blocks) {
@@ -1190,7 +989,8 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                         // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                         if (contentBlockIndex === -1) {
                             contentBlockIndex = 0;
-                        } else {
+                        }
+                        else {
                             contentBlockIndex++;
                         }
                         reasoningBlockStarted = true;
@@ -1207,14 +1007,14 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                         delta: { type: 'thinking_delta', thinking: delta.reasoning_content }
                     });
                 }
-
                 // Handle text content
                 if (delta.content) {
                     if (!textBlockStarted) {
                         // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                         if (contentBlockIndex === -1) {
                             contentBlockIndex = 0;
-                        } else {
+                        }
+                        else {
                             contentBlockIndex++;
                         }
                         sendEvent(controller, 'content_block_start', { type: 'content_block_start', index: contentBlockIndex, content_block: { type: 'text', text: '' } });
@@ -1223,22 +1023,25 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     textContent += delta.content;
                     sendEvent(controller, 'content_block_delta', { type: 'content_block_delta', index: contentBlockIndex, delta: { type: 'text_delta', text: delta.content } });
                 }
-
                 // Handle tool calls
                 if (delta.tool_calls) {
-                    for(const tc_delta of delta.tool_calls) {
+                    for (const tc_delta of delta.tool_calls) {
                         const index = tc_delta.index;
                         if (!toolCalls[index]) {
                             toolCalls[index] = { id: '', name: '', args: '', claudeIndex: 0, started: false, stopped: false };
                         }
-                        if (tc_delta.id) toolCalls[index].id = tc_delta.id;
-                        if (tc_delta.function?.name) toolCalls[index].name = tc_delta.function.name;
-                        if (tc_delta.function?.arguments) toolCalls[index].args += tc_delta.function.arguments;
+                        if (tc_delta.id)
+                            toolCalls[index].id = tc_delta.id;
+                        if (tc_delta.function?.name)
+                            toolCalls[index].name = tc_delta.function.name;
+                        if (tc_delta.function?.arguments)
+                            toolCalls[index].args += tc_delta.function.arguments;
                         if (toolCalls[index].id && toolCalls[index].name && !toolCalls[index].started) {
                             // 如果是第一个 block，从 -1 递增到 0；否则递增 contentBlockIndex
                             if (contentBlockIndex === -1) {
                                 contentBlockIndex = 0;
-                            } else {
+                            }
+                            else {
                                 contentBlockIndex++;
                             }
                             toolCalls[index].claudeIndex = contentBlockIndex;
@@ -1250,18 +1053,18 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                         }
                     }
                 }
-            } catch (e) {
+            }
+            catch (e) {
                 // Ignore JSON parse errors
             }
         }
     };
 }
-
 // --- CORS Handling ---
-
-function handleOptions(res: express.Response) {
+function handleOptions(res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key, Anthropic-Version');
     return res.status(200).end();
 }
+//# sourceMappingURL=index.js.map
