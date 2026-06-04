@@ -320,6 +320,22 @@ function buildAnthropicCacheCreation(cacheCreation) {
         ...(cacheCreation && typeof cacheCreation === 'object' ? cacheCreation : {}),
     };
 }
+function buildOutputTokensDetails(completionTokensDetails) {
+    if (!completionTokensDetails || typeof completionTokensDetails !== 'object') {
+        return undefined;
+    }
+    const reasoningTokens = completionTokensDetails.reasoning_tokens;
+    if (typeof reasoningTokens !== 'number') {
+        return undefined;
+    }
+    return { thinking_tokens: reasoningTokens };
+}
+function applyOutputTokensDetails(usage, completionTokensDetails) {
+    const outputTokensDetails = buildOutputTokensDetails(completionTokensDetails);
+    if (outputTokensDetails !== undefined) {
+        usage.output_tokens_details = outputTokensDetails;
+    }
+}
 /**
  * Converts a Claude API request to the OpenAI format.
  */
@@ -654,6 +670,7 @@ function convertOpenAIToClaudeResponse(openaiResponse, model) {
     if (cacheType !== undefined) {
         usage.cache_type = cacheType;
     }
+    applyOutputTokensDetails(usage, openaiResponse.usage.completion_tokens_details);
     return {
         id: messageId,
         type: "message",
@@ -702,6 +719,7 @@ function streamTransformer(model, debugUpstreamIo = false) {
     let cacheCreationTokens = 0;
     let cacheCreation = undefined;
     let cacheType = undefined;
+    let lastCompletionTokensDetails = undefined;
     let lastDelta = null; // Track last delta to detect transitions
     let lastFinishReasonFromChunks = null;
     const sendEvent = (controller, event, data) => {
@@ -836,6 +854,7 @@ function streamTransformer(model, debugUpstreamIo = false) {
                 if (cacheType !== undefined) {
                     usageData.cache_type = cacheType;
                 }
+                applyOutputTokensDetails(usageData, lastCompletionTokensDetails);
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
                 controller.terminate();
@@ -865,12 +884,15 @@ function streamTransformer(model, debugUpstreamIo = false) {
                     initialized = true;
                 }
                 if (openaiChunk.usage) {
-                    const { prompt_tokens, completion_tokens, prompt_tokens_details } = openaiChunk.usage;
+                    const { prompt_tokens, completion_tokens, prompt_tokens_details, completion_tokens_details } = openaiChunk.usage;
                     if (typeof prompt_tokens === 'number') {
                         inputTokens = Math.max(inputTokens, prompt_tokens);
                     }
                     if (typeof completion_tokens === 'number') {
                         outputTokens = Math.max(outputTokens, completion_tokens);
+                    }
+                    if (completion_tokens_details) {
+                        lastCompletionTokensDetails = completion_tokens_details;
                     }
                     // Handle cache-related token details
                     if (prompt_tokens_details) {

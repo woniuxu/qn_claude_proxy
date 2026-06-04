@@ -502,6 +502,24 @@ function buildAnthropicCacheCreation(cacheCreation?: any): any {
     };
 }
 
+function buildOutputTokensDetails(completionTokensDetails: any): { thinking_tokens: number } | undefined {
+    if (!completionTokensDetails || typeof completionTokensDetails !== 'object') {
+        return undefined;
+    }
+    const reasoningTokens = completionTokensDetails.reasoning_tokens;
+    if (typeof reasoningTokens !== 'number') {
+        return undefined;
+    }
+    return { thinking_tokens: reasoningTokens };
+}
+
+function applyOutputTokensDetails(usage: any, completionTokensDetails: any): void {
+    const outputTokensDetails = buildOutputTokensDetails(completionTokensDetails);
+    if (outputTokensDetails !== undefined) {
+        usage.output_tokens_details = outputTokensDetails;
+    }
+}
+
 /**
  * Converts a Claude API request to the OpenAI format.
  */
@@ -852,6 +870,7 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
     if (cacheType !== undefined) {
         usage.cache_type = cacheType;
     }
+    applyOutputTokensDetails(usage, openaiResponse.usage.completion_tokens_details);
 
     return {
         id: messageId,
@@ -900,6 +919,7 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
     let cacheCreationTokens = 0;
     let cacheCreation: any = undefined;
     let cacheType: string | undefined = undefined;
+    let lastCompletionTokensDetails: any = undefined;
     let lastDelta: any = null; // Track last delta to detect transitions
     let lastFinishReasonFromChunks: string | null = null;
     const sendEvent = (controller: TransformStreamDefaultController, event: string, data: object) => {
@@ -1031,6 +1051,7 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 if (cacheType !== undefined) {
                     usageData.cache_type = cacheType;
                 }
+                applyOutputTokensDetails(usageData, lastCompletionTokensDetails);
 
                 sendEvent(controller, 'message_delta', { type: 'message_delta', delta: { stop_reason: finalStopReason, stop_sequence: null }, usage: usageData });
                 sendEvent(controller, 'message_stop', { type: 'message_stop' });
@@ -1062,12 +1083,15 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                 }
 
                 if (openaiChunk.usage) {
-                    const { prompt_tokens, completion_tokens, prompt_tokens_details } = openaiChunk.usage;
+                    const { prompt_tokens, completion_tokens, prompt_tokens_details, completion_tokens_details } = openaiChunk.usage;
                     if (typeof prompt_tokens === 'number') {
                         inputTokens = Math.max(inputTokens, prompt_tokens);
                     }
                     if (typeof completion_tokens === 'number') {
                         outputTokens = Math.max(outputTokens, completion_tokens);
+                    }
+                    if (completion_tokens_details) {
+                        lastCompletionTokensDetails = completion_tokens_details;
                     }
                     // Handle cache-related token details
                     if (prompt_tokens_details) {
