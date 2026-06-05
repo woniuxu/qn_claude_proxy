@@ -469,6 +469,11 @@ function extractCacheCreationTokens(details: any): number {
             return typeof value === 'number' ? sum + value : sum;
         }, 0);
     }
+    if (details.cache_creation_token_details && typeof details.cache_creation_token_details === 'object') {
+        return Object.values(details.cache_creation_token_details).reduce((sum: number, value: any) => {
+            return typeof value === 'number' ? sum + value : sum;
+        }, 0);
+    }
     return 0;
 }
 
@@ -486,7 +491,9 @@ function extractPromptCacheDetails(promptTokensDetails: any): {
     const cacheCreationTokens = extractCacheCreationTokens(promptTokensDetails);
     const cacheCreation = (promptTokensDetails.cache_creation && typeof promptTokensDetails.cache_creation === 'object')
         ? promptTokensDetails.cache_creation
-        : undefined;
+        : (promptTokensDetails.cache_creation_token_details && typeof promptTokensDetails.cache_creation_token_details === 'object')
+            ? promptTokensDetails.cache_creation_token_details
+            : undefined;
     const cacheType = (typeof promptTokensDetails.cache_type === 'string' && promptTokensDetails.cache_type)
         ? promptTokensDetails.cache_type
         : undefined;
@@ -494,12 +501,20 @@ function extractPromptCacheDetails(promptTokensDetails: any): {
     return { cacheReadTokens, cacheCreationTokens, cacheCreation, cacheType };
 }
 
-function buildAnthropicCacheCreation(cacheCreation?: any): any {
-    return {
+function buildAnthropicCacheCreation(cacheCreationTokens: number, cacheCreation?: any): any {
+    const result = {
         ephemeral_5m_input_tokens: 0,
         ephemeral_1h_input_tokens: 0,
         ...(cacheCreation && typeof cacheCreation === 'object' ? cacheCreation : {}),
     };
+    if (
+        cacheCreationTokens > 0 &&
+        result.ephemeral_5m_input_tokens === 0 &&
+        result.ephemeral_1h_input_tokens === 0
+    ) {
+        result.ephemeral_5m_input_tokens = cacheCreationTokens;
+    }
+    return result;
 }
 
 function buildOutputTokensDetails(completionTokensDetails: any): { thinking_tokens: number } | undefined {
@@ -864,7 +879,7 @@ function convertOpenAIToClaudeResponse(openaiResponse: any, model: string): any 
         output_tokens: openaiResponse.usage.completion_tokens,
         cache_read_input_tokens: cacheReadTokens,
         cache_creation_input_tokens: cacheCreationTokens,
-        cache_creation: buildAnthropicCacheCreation(cacheCreation),
+        cache_creation: buildAnthropicCacheCreation(cacheCreationTokens, cacheCreation),
     };
     // cache_type absent => do not output.
     if (cacheType !== undefined) {
@@ -1046,7 +1061,7 @@ function streamTransformer(model: string, debugUpstreamIo = false) {
                     output_tokens: outputTokens,
                     cache_read_input_tokens: cacheReadTokens,
                     cache_creation_input_tokens: cacheCreationTokens,
-                    cache_creation: buildAnthropicCacheCreation(cacheCreation),
+                    cache_creation: buildAnthropicCacheCreation(cacheCreationTokens, cacheCreation),
                 };
                 if (cacheType !== undefined) {
                     usageData.cache_type = cacheType;
