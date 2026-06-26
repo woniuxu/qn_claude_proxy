@@ -99,6 +99,55 @@ describe('convertImageBlockToOpenAI', () => {
 });
 
 // ============================================================
+// assistant thinking block 转换测试
+// ============================================================
+describe('convertClaudeToOpenAIRequest - assistant thinking block', () => {
+    it('将 thinking block 映射到顶层 reasoning_content 和 thinking_blocks', () => {
+        const request = {
+            model: 'deepseek/deepseek-v4-pro',
+            messages: [
+                { role: 'user', content: '你好' },
+                {
+                    role: 'assistant',
+                    content: [
+                        {
+                            type: 'thinking',
+                            thinking: '用户在打招呼，我应该友好回应。',
+                            signature: '41cacd8415d94c868e0b4782359cebc3',
+                        },
+                        {
+                            type: 'text',
+                            text: '你好！有什么可以帮你的？',
+                        },
+                    ],
+                },
+                { role: 'user', content: '继续' },
+            ],
+            max_tokens: 1024,
+        };
+
+        const result = convertClaudeToOpenAIRequest(request, 'deepseek/deepseek-v4-pro');
+        const assistantMsg = result.messages.find(m => m.role === 'assistant');
+
+        expect(assistantMsg).toMatchObject({
+            role: 'assistant',
+            content: '你好！有什么可以帮你的？',
+            reasoning_content: '用户在打招呼，我应该友好回应。',
+            thinking_blocks: [
+                {
+                    type: 'thinking',
+                    thinking: '用户在打招呼，我应该友好回应。',
+                    signature: '41cacd8415d94c868e0b4782359cebc3',
+                },
+            ],
+        });
+        expect(assistantMsg!.content).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: 'thinking' }),
+        ]));
+    });
+});
+
+// ============================================================
 // tool_result 中包含图片的转换测试
 // ============================================================
 describe('convertClaudeToOpenAIRequest - tool_result 图片处理', () => {

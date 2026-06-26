@@ -640,6 +640,8 @@ export function convertClaudeToOpenAIRequest(
 
             const contentBlocks: OpenAIContentBlock[] = [];
             const toolCalls: OpenAIToolCall[] = [];
+            const thinkingBlocksForMessage: Array<{ type: "thinking"; thinking: string; signature?: string }> = [];
+            const reasoningContentParts: string[] = [];
             if (Array.isArray(message.content)) {
                 message.content.forEach(block => {
                     if (block.type === 'text') {
@@ -652,18 +654,18 @@ export function convertClaudeToOpenAIRequest(
                         }
                         contentBlocks.push(textBlock);
                     } else if (block.type === 'thinking') {
-                        // Preserve thinking blocks in OpenAI format with signature，并透传 cache_control
-                        const thinkingBlock: OpenAIContentBlock = {
+                        const thinkingText = block.thinking || block.text || '';
+                        const thinkingBlock: { type: "thinking"; thinking: string; signature?: string } = {
                             type: 'thinking',
-                            thinking: block.thinking || block.text || ''
+                            thinking: thinkingText,
                         };
                         if (block.signature) {
                             thinkingBlock.signature = block.signature;
                         }
-                        if ((block as ClaudeTextBlock).cache_control !== undefined) {
-                            thinkingBlock.cache_control = (block as ClaudeTextBlock).cache_control;
+                        thinkingBlocksForMessage.push(thinkingBlock);
+                        if (thinkingText) {
+                            reasoningContentParts.push(thinkingText);
                         }
-                        contentBlocks.push(thinkingBlock);
                     } else if (block.type === 'tool_use') {
                         const toolCall: OpenAIToolCall = {
                             id: block.id!,
@@ -679,8 +681,7 @@ export function convertClaudeToOpenAIRequest(
                 });
             }
 
-            // If we have structured content blocks (thinking or multiple text blocks), use array format
-            // Otherwise, use simple string format for backward compatibility
+            // If we have multiple text blocks, use array format; single text → string
             let content: string | OpenAIContentBlock[];
             if (contentBlocks.length === 0) {
                 content = '';
@@ -691,6 +692,10 @@ export function convertClaudeToOpenAIRequest(
             }
 
             const assistantMessage: OpenAIMessage = { role: 'assistant', content };
+            if (thinkingBlocksForMessage.length > 0) {
+                assistantMessage.thinking_blocks = thinkingBlocksForMessage;
+                assistantMessage.reasoning_content = reasoningContentParts.join('\n');
+            }
             if (toolCalls.length > 0) {
                 assistantMessage.tool_calls = toolCalls;
             }
