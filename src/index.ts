@@ -640,7 +640,6 @@ export function convertClaudeToOpenAIRequest(
 
             const contentBlocks: OpenAIContentBlock[] = [];
             const toolCalls: OpenAIToolCall[] = [];
-            const thinkingBlocksForMessage: Array<{ type: "thinking"; thinking: string; signature?: string }> = [];
             const reasoningContentParts: string[] = [];
             if (Array.isArray(message.content)) {
                 message.content.forEach(block => {
@@ -655,14 +654,6 @@ export function convertClaudeToOpenAIRequest(
                         contentBlocks.push(textBlock);
                     } else if (block.type === 'thinking') {
                         const thinkingText = block.thinking || block.text || '';
-                        const thinkingBlock: { type: "thinking"; thinking: string; signature?: string } = {
-                            type: 'thinking',
-                            thinking: thinkingText,
-                        };
-                        if (block.signature) {
-                            thinkingBlock.signature = block.signature;
-                        }
-                        thinkingBlocksForMessage.push(thinkingBlock);
                         if (thinkingText) {
                             reasoningContentParts.push(thinkingText);
                         }
@@ -692,8 +683,7 @@ export function convertClaudeToOpenAIRequest(
             }
 
             const assistantMessage: OpenAIMessage = { role: 'assistant', content };
-            if (thinkingBlocksForMessage.length > 0) {
-                assistantMessage.thinking_blocks = thinkingBlocksForMessage;
+            if (reasoningContentParts.length > 0) {
                 assistantMessage.reasoning_content = reasoningContentParts.join('\n');
             }
             if (toolCalls.length > 0) {

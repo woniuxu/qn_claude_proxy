@@ -102,7 +102,7 @@ describe('convertImageBlockToOpenAI', () => {
 // assistant thinking block 转换测试
 // ============================================================
 describe('convertClaudeToOpenAIRequest - assistant thinking block', () => {
-    it('将 thinking block 映射到顶层 reasoning_content 和 thinking_blocks', () => {
+    it('将 thinking block 映射到顶层 reasoning_content', () => {
         const request = {
             model: 'deepseek/deepseek-v4-pro',
             messages: [
@@ -133,14 +133,8 @@ describe('convertClaudeToOpenAIRequest - assistant thinking block', () => {
             role: 'assistant',
             content: '你好！有什么可以帮你的？',
             reasoning_content: '用户在打招呼，我应该友好回应。',
-            thinking_blocks: [
-                {
-                    type: 'thinking',
-                    thinking: '用户在打招呼，我应该友好回应。',
-                    signature: '41cacd8415d94c868e0b4782359cebc3',
-                },
-            ],
         });
+        expect(assistantMsg).not.toHaveProperty('thinking_blocks');
         expect(assistantMsg!.content).not.toEqual(expect.arrayContaining([
             expect.objectContaining({ type: 'thinking' }),
         ]));
