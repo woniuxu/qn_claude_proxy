@@ -72,7 +72,7 @@ type ClaudeContent =
     | ClaudeTextBlock[];
 
 interface ClaudeMessage {
-    role: "user" | "assistant";
+    role: "user" | "assistant" | "system";
     content: ClaudeContent;
 }
 
@@ -728,6 +728,29 @@ export function convertClaudeToOpenAIRequest(
                 assistantMessage.tool_calls = toolCalls;
             }
             openaiMessages.push(assistantMessage);
+        } else if (message.role === 'system') {
+            // messages 内的 system 与顶层 system 一并保留，按出现顺序追加
+            if (Array.isArray(message.content)) {
+                const mappedContent: OpenAIContentBlock[] = message.content.map((block) => {
+                    if (block.type === 'text') {
+                        const base: OpenAIContentBlock = {
+                            type: 'text',
+                            text: block.text,
+                        };
+                        if (block.cache_control !== undefined) {
+                            base.cache_control = block.cache_control;
+                        }
+                        return base;
+                    }
+                    return block as any;
+                });
+                openaiMessages.push({
+                    role: 'system',
+                    content: mappedContent,
+                });
+            } else {
+                openaiMessages.push({ role: 'system', content: message.content });
+            }
         }
     }
 
