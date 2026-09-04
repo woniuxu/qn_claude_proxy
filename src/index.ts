@@ -198,6 +198,55 @@ function stringifyForDebug(value: unknown): string {
     }
 }
 
+type IncomingHeaders = Record<string, string | string[] | undefined>;
+
+/**
+ * Copy end-to-end request headers to the upstream request.
+ *
+ * Headers already set by the proxy are kept, and hop-by-hop/transport headers
+ * are left for fetch to manage. Header-name comparisons are case-insensitive.
+ */
+export function appendPassthroughHeaders(
+    upstreamHeaders: Record<string, string>,
+    incomingHeaders: IncomingHeaders,
+): void {
+    const connectionTokens = new Set<string>();
+    const connectionHeader = incomingHeaders.connection;
+    const connectionValues = Array.isArray(connectionHeader) ? connectionHeader : [connectionHeader];
+    for (const value of connectionValues) {
+        if (!value) continue;
+        for (const token of value.split(',')) {
+            const normalized = token.trim().toLowerCase();
+            if (normalized) connectionTokens.add(normalized);
+        }
+    }
+
+    const skippedHeaders = new Set([
+        'host',
+        'content-length',
+        'connection',
+        'keep-alive',
+        'proxy-authenticate',
+        'proxy-authorization',
+        'proxy-connection',
+        'te',
+        'trailer',
+        'transfer-encoding',
+        'upgrade',
+        ...connectionTokens,
+    ]);
+    const existingHeaders = new Set(Object.keys(upstreamHeaders).map(key => key.toLowerCase()));
+
+    for (const [key, value] of Object.entries(incomingHeaders)) {
+        if (value === undefined) continue;
+        const lower = key.toLowerCase();
+        if (skippedHeaders.has(lower) || existingHeaders.has(lower)) continue;
+
+        upstreamHeaders[key] = Array.isArray(value) ? value.join(', ') : value;
+        existingHeaders.add(lower);
+    }
+}
+
 // 中间件
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
@@ -280,20 +329,8 @@ app.all('/v1/messages', async (req, res) => {
             upstreamHeaders['Referer'] = Array.isArray(refererHeader) ? refererHeader[0] : refererHeader;
         }
 
-        // 透传用户请求的其他 header 到上游（不覆盖已设置的）
-        const skipKeys = new Set(['host', 'content-length', 'content-type', 'authorization', 'connection']);
-        const passthroughPrefixes = ['x-'];
-        const passthroughNames = ['accept', 'accept-language', 'accept-encoding'];
-        for (const [key, value] of Object.entries(req.headers)) {
-            if (value === undefined) continue;
-            const lower = key.toLowerCase();
-            if (skipKeys.has(lower)) continue;
-            if (upstreamHeaders[lower] !== undefined) continue;
-            const valueStr = Array.isArray(value) ? value[0] : value;
-            if (passthroughNames.includes(lower) || passthroughPrefixes.some(p => lower.startsWith(p))) {
-                upstreamHeaders[key] = valueStr;
-            }
-        }
+        // 默认透传所有端到端 header；代理已重建的 header 和逐跳 header 除外。
+        appendPassthroughHeaders(upstreamHeaders, req.headers);
 
         if (DEBUG_UPSTREAM_IO) {
             const debugRequestLog = {
